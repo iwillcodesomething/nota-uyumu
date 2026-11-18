@@ -1,6 +1,7 @@
 package com.notauyumu.studio
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaPlayer
@@ -124,6 +125,8 @@ fun NotaUyumuStudioApp() {
     var playMetronomeDuringRecord by remember { mutableStateOf(false) }
     var playFirstNoteOnStart by remember { mutableStateOf(true) }
     var forceBuiltInMic by remember { mutableStateOf(true) }
+    var playOtherPartsAccompaniment by remember { mutableStateOf(false) }
+    var isFreeTunerMode by remember { mutableStateOf(false) }
 
     var statusMsg by remember { mutableStateOf<String?>(null) }
     var isRecording by remember { mutableStateOf(false) }
@@ -190,6 +193,7 @@ fun NotaUyumuStudioApp() {
         timerJob = null
         isRecording = false
         isPreviewPlaying = false
+        isFreeTunerMode = false
         countInBeat = null
         if (showReport && pitchHistory.isNotEmpty()) {
             summary = PdfOcrEngine.computePerformanceSummary(
@@ -199,6 +203,47 @@ fun NotaUyumuStudioApp() {
                 transposeOctaves,
                 passingAccuracyPercent
             )
+        }
+    }
+
+    fun toggleFreeTuner() {
+        if (isFreeTunerMode) {
+            stopAll(false)
+            isFreeTunerMode = false
+            return
+        }
+        stopAll(false)
+        isFreeTunerMode = true
+        pitchHistory.clear()
+        currentBeat = 0f
+        audioEngine.rmsThreshold = rmsThreshold
+        val tunerStartMs = System.currentTimeMillis()
+        try {
+            audioEngine.start(context = context, forceBuiltInMic = forceBuiltInMic) { sample ->
+                val tSec = (System.currentTimeMillis() - tunerStartMs) / 1000f
+                val beat = tSec * (bpm / 60f)
+                val nearestMidi = sample.midiFloat?.let { kotlin.math.round(it).toInt() }
+                val cents = if (sample.midiFloat != null && nearestMidi != null) (sample.midiFloat - nearestMidi) * 100f else null
+                val st = when {
+                    cents == null -> PitchStatus.SILENT
+                    abs(cents) <= customToleranceCents -> PitchStatus.HIT
+                    abs(cents) <= maxOf(60, customToleranceCents * 2) -> PitchStatus.NEAR
+                    else -> PitchStatus.MISS
+                }
+                val frame = PitchFrame(beat, tSec, sample.frequency, sample.midiFloat, sample.rms, nearestMidi, null, cents, st)
+                scope.launch(Dispatchers.Main) {
+                    currentBeat = beat
+                    pitchHistory.add(frame)
+                    liveTargetMidi = nearestMidi
+                    liveDetectedNote = sample.detectedNote
+                    liveFrequency = sample.frequency
+                    liveCentsOff = cents
+                    liveStatus = st
+                }
+            }
+        } catch (e: Exception) {
+            isFreeTunerMode = false
+            statusMsg = "Mikrofon başlatılamadı: ${e.message}"
         }
     }
 
@@ -292,6 +337,10 @@ fun NotaUyumuStudioApp() {
             recordStartMs = System.currentTimeMillis()
 
             // Gösterirken eşzamanlı rehber ses (referans kayıt veya sentez) çalma
+            if (playOtherPartsAccompaniment && score.parts.size > 1) {
+                val others = score.parts.filter { it.id != selectedPart.id }
+                synth.startOtherPartsAccompaniment(others, bpm, transposeOctaves)
+            }
             if (playGuideDuringRecord) {
                 if (referenceUri != null) {
                     try {
@@ -527,6 +576,24 @@ fun NotaUyumuStudioApp() {
             }
 
             FilterChip(
+                selected = isFreeTunerMode,
+                onClick = {
+                    val hasPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    if (hasPerm) toggleFreeTuner()
+                    else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                label = { Text(if (isFreeTunerMode) "Isınma: Açık" else "Serbest Isınma", fontSize = 11.sp) }
+            )
+
+            if (score.parts.size > 1) {
+                FilterChip(
+                    selected = playOtherPartsAccompaniment,
+                    onClick = { playOtherPartsAccompaniment = !playOtherPartsAccompaniment },
+                    label = { Text(if (playOtherPartsAccompaniment) "Koro Eşliği: Açık" else "Koro Eşliği", fontSize = 11.sp) }
+                )
+            }
+
+            FilterChip(
                 selected = playMetronomeDuringRecord,
                 onClick = { playMetronomeDuringRecord = !playMetronomeDuringRecord },
                 label = { Text("Metronom", fontSize = 11.sp) }
@@ -746,6 +813,23 @@ fun NotaUyumuStudioApp() {
                 currentBeat = 0f
                 pitchHistory.clear()
                 statusMsg = "Hatalı ölçüler (${measures.joinToString(", ")}) çalışma moduna alındı."
+            },
+            onShareReport = {
+                val weakText = if (s.weakMeasures.isEmpty()) "Yok" else s.weakMeasures.joinToString(", ")
+                val shareText = buildString {
+                    appendLine("NotaUyumu Studio — Koro Çalışma Raporu")
+                    appendLine("Eser: ${score.title}")
+                    appendLine("Parti: ${s.partName}")
+                    appendLine("Doğruluk: %${s.overallAccuracy} (${s.hitNotesCount}/${s.totalTargetNotes} nota)")
+                    s.referenceMatchPercent?.let { appendLine("Referans Kayıt Uyumu: %$it") }
+                    appendLine("Hata Şiddeti: Ort. ±${s.meanAbsCentsError} cent (Maks ${s.maxCentsError} cent)")
+                    appendLine("Hatalı Ölçüler: $weakText")
+                }
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, shareText)
+                }
+                context.startActivity(Intent.createChooser(intent, "Raporu Paylaş"))
             },
             onExportWav = {
                 val safeName = selectedPart.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")

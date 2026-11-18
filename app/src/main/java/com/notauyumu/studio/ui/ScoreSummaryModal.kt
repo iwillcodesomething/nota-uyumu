@@ -43,6 +43,7 @@ fun ScoreSummaryModal(
     onRetry: () -> Unit,
     onPracticeWeakSpots: (List<Int>) -> Unit,
     onExportWav: () -> Unit,
+    onShareReport: () -> Unit,
     onSwitchPart: (String) -> Unit
 ) {
     Dialog(onDismissRequest = onClose) {
@@ -178,6 +179,9 @@ fun ScoreSummaryModal(
                     OutlinedButton(onClick = onExportWav) {
                         Text("Kaydı Dışa Aktar (.WAV)", fontSize = 11.sp)
                     }
+                }
+                OutlinedButton(onClick = onShareReport) {
+                    Text("Raporu Paylaş", fontSize = 11.sp)
                 }
             }
 

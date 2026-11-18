@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.notauyumu.studio.model.NoteEvent
+import com.notauyumu.studio.model.PartData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,11 +20,47 @@ class ReferenceSynth {
     private var playJob: Job? = null
     private var guideJob: Job? = null
 
+    private val choirJobs = mutableListOf<Job>()
+
     fun stopAll() {
         playJob?.cancel()
         playJob = null
         guideJob?.cancel()
         guideJob = null
+        choirJobs.forEach { it.cancel() }
+        choirJobs.clear()
+    }
+
+    /**
+     * Gençlik korosu çok sesli provası için seçili parti dışındaki diğer partileri
+     * kulaklıkta yumuşak bir koro eşliği olarak eşzamanlı çalar.
+     */
+    fun startOtherPartsAccompaniment(otherParts: List<PartData>, bpm: Int, transposeOctaves: Int) {
+        choirJobs.forEach { it.cancel() }
+        choirJobs.clear()
+        val secPerBeat = 60f / bpm
+        val ampPerPart = (0.22 / otherParts.size.coerceAtLeast(1)).coerceIn(0.06, 0.14)
+
+        for (part in otherParts) {
+            val job = CoroutineScope(Dispatchers.IO).launch {
+                for (n in part.notes) {
+                    if (!isActive) break
+                    val durSec = (n.durationBeats * secPerBeat).coerceAtLeast(0.12f)
+                    if (!n.isRest && n.midi != null) {
+                        playPcmStream(
+                            YinDetector.midiToFrequency(n.midi + transposeOctaves * 12),
+                            durSec * 0.90f,
+                            amplitude = ampPerPart
+                        )
+                        val gapMs = (durSec * 0.10f * 1000).toLong()
+                        if (gapMs > 0) delay(gapMs)
+                    } else {
+                        delay((durSec * 1000).toLong())
+                    }
+                }
+            }
+            choirJobs.add(job)
+        }
     }
 
     fun playTone(midi: Int, durationSec: Float = 1.2f) {
