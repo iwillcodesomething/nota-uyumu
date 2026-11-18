@@ -104,6 +104,7 @@ fun NotaUyumuStudioApp() {
 
     var score by remember { mutableStateOf(PdfOcrEngine.DEFAULT_SATB_SCORE) }
     var selectedPartId by remember { mutableStateOf(score.parts.first().id) }
+    var weakMeasuresFilter by remember { mutableStateOf<List<Int>?>(null) }
     var pdfBitmaps by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var currentPage by remember { mutableIntStateOf(0) }
 
@@ -116,9 +117,13 @@ fun NotaUyumuStudioApp() {
     var bpm by remember { mutableIntStateOf(80) }
     var transposeOctaves by remember { mutableIntStateOf(0) }
     var tolerance by remember { mutableStateOf(ToleranceLevel.NORMAL) }
+    var customToleranceCents by remember { mutableIntStateOf(30) }
+    var passingAccuracyPercent by remember { mutableIntStateOf(60) }
     var rmsThreshold by remember { mutableFloatStateOf(0.015f) }
-    var playGuideDuringRecord by remember { mutableStateOf(true) }
+    var playGuideDuringRecord by remember { mutableStateOf(false) }
     var playMetronomeDuringRecord by remember { mutableStateOf(false) }
+    var playFirstNoteOnStart by remember { mutableStateOf(true) }
+    var forceBuiltInMic by remember { mutableStateOf(true) }
 
     var statusMsg by remember { mutableStateOf<String?>(null) }
     var isRecording by remember { mutableStateOf(false) }
@@ -160,8 +165,21 @@ fun NotaUyumuStudioApp() {
         }
     }
 
-    val selectedPart = remember(score, selectedPartId) {
+    val baseSelectedPart = remember(score, selectedPartId) {
         score.parts.find { it.id == selectedPartId } ?: score.parts.first()
+    }
+    val selectedPart = remember(baseSelectedPart, weakMeasuresFilter) {
+        val filter = weakMeasuresFilter
+        if (filter.isNullOrEmpty()) baseSelectedPart
+        else {
+            var cursor = 0f
+            val filteredNotes = baseSelectedPart.notes.filter { it.measure in filter }.map { n ->
+                val item = n.copy(startBeat = cursor)
+                cursor += n.durationBeats
+                item
+            }
+            baseSelectedPart.copy(name = "${baseSelectedPart.name} (Hatalı Ölçüler)", notes = filteredNotes)
+        }
     }
 
     fun stopAll(showReport: Boolean) {
@@ -177,8 +195,9 @@ fun NotaUyumuStudioApp() {
             summary = PdfOcrEngine.computePerformanceSummary(
                 selectedPart,
                 pitchHistory.toList(),
-                tolerance.cents,
-                transposeOctaves
+                customToleranceCents,
+                transposeOctaves,
+                passingAccuracyPercent
             )
         }
     }
@@ -196,7 +215,7 @@ fun NotaUyumuStudioApp() {
 
         audioEngine.rmsThreshold = rmsThreshold
         try {
-            audioEngine.start { sample ->
+            audioEngine.start(context = context, forceBuiltInMic = forceBuiltInMic) { sample ->
                 if (currentBeat < 0f || recordStartMs == 0L) return@start
                 val beatNow = currentBeat
                 val timeSecNow = (System.currentTimeMillis() - recordStartMs) / 1000f
@@ -217,8 +236,8 @@ fun NotaUyumuStudioApp() {
                         cents = (sample.midiFloat - effectiveTarget) * 100f
                         val absC = abs(cents)
                         when {
-                            absC <= tolerance.cents -> PitchStatus.HIT
-                            absC <= maxOf(60, tolerance.cents * 2) -> PitchStatus.NEAR
+                            absC <= customToleranceCents -> PitchStatus.HIT
+                            absC <= maxOf(60, customToleranceCents * 2) -> PitchStatus.NEAR
                             else -> PitchStatus.MISS
                         }
                     }
@@ -239,7 +258,7 @@ fun NotaUyumuStudioApp() {
                 )
                 scope.launch(Dispatchers.Main) {
                     pitchHistory.add(frame)
-                    liveTargetMidi = tMidi
+                    liveTargetMidi = if (referenceContour.isNotEmpty()) refMidi?.toInt() else tMidi
                     liveDetectedNote = sample.detectedNote
                     liveFrequency = sample.frequency
                     liveCentsOff = cents
@@ -257,9 +276,15 @@ fun NotaUyumuStudioApp() {
         val totalBeats = maxOf(partTotalBeats, refTotalBeats)
 
         timerJob = scope.launch {
-            for (c in 4 downTo 1) {
+            val countBeats = score.beatsPerMeasure.coerceIn(2, 6)
+            if (playFirstNoteOnStart && referenceUri == null) {
+                synth.playFirstNote(selectedPart.notes, transposeOctaves)
+                if (!forceBuiltInMic) audioEngine.suppressFor(1350L)
+            }
+            for (c in countBeats downTo 1) {
                 countInBeat = c
-                synth.playMetronomeClick(c == 4)
+                if (!forceBuiltInMic) audioEngine.suppressFor(180L)
+                synth.playMetronomeClick(c == countBeats)
                 delay(msPerBeat)
             }
             countInBeat = null
@@ -291,7 +316,8 @@ fun NotaUyumuStudioApp() {
                 val intBeat = beat.toInt()
                 if (playMetronomeDuringRecord && intBeat > lastMetronomeBeat) {
                     lastMetronomeBeat = intBeat
-                    synth.playMetronomeClick(intBeat % 4 == 0)
+                    if (!forceBuiltInMic) audioEngine.suppressFor(160L)
+                    synth.playMetronomeClick(intBeat % score.beatsPerMeasure == 0)
                 }
                 if (beat >= totalBeats) {
                     stopAll(true)
@@ -321,6 +347,7 @@ fun NotaUyumuStudioApp() {
                     currentPage = 0
                     score = res.score
                     selectedPartId = res.score.parts.first().id
+                    bpm = res.score.bpm
                     statusMsg = "${res.score.parts.size} parti yerel OMR ile ayrıştırıldı."
                 } else {
                     val parsed = withContext(Dispatchers.Default) {
@@ -329,6 +356,7 @@ fun NotaUyumuStudioApp() {
                     pdfBitmaps = emptyList()
                     score = parsed
                     selectedPartId = parsed.parts.first().id
+                    bpm = parsed.bpm
                     statusMsg = "${parsed.parts.size} parti MusicXML dosyasından yüklendi."
                 }
                 currentBeat = 0f
@@ -336,6 +364,16 @@ fun NotaUyumuStudioApp() {
             } catch (e: Exception) {
                 statusMsg = "Hata: ${e.message}"
             }
+        }
+    }
+
+    val wavExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            audioEngine.exportWavToUri(context, uri)
+            statusMsg = "Ses kaydı WAV olarak başarıyla dışa aktarıldı."
+        } catch (e: Exception) {
+            statusMsg = "Dışa aktarma hatası: ${e.message}"
         }
     }
 
@@ -423,6 +461,7 @@ fun NotaUyumuStudioApp() {
                     onClick = {
                         stopAll(false)
                         selectedPartId = part.id
+                        weakMeasuresFilter = null
                         currentBeat = 0f
                         pitchHistory.clear()
                     },
@@ -462,10 +501,30 @@ fun NotaUyumuStudioApp() {
             }) { Text(if (isPreviewPlaying) "Durdur" else "Partiyi Dinle", fontSize = 11.sp) }
 
             FilterChip(
+                selected = playFirstNoteOnStart,
+                onClick = { playFirstNoteOnStart = !playFirstNoteOnStart },
+                label = { Text(if (playFirstNoteOnStart) "İlk Ses: Açık" else "İlk Ses: Kapalı", fontSize = 11.sp) }
+            )
+
+            FilterChip(
                 selected = playGuideDuringRecord,
                 onClick = { playGuideDuringRecord = !playGuideDuringRecord },
-                label = { Text("Kayıtta Rehber Ses", fontSize = 11.sp) }
+                label = { Text(if (playGuideDuringRecord) "Sesi Çal: Açık" else "Sesi Çal: Kapalı", fontSize = 11.sp) }
             )
+
+            FilterChip(
+                selected = forceBuiltInMic,
+                onClick = { forceBuiltInMic = !forceBuiltInMic },
+                label = { Text(if (forceBuiltInMic) "Mik: Ana (Kulaklık)" else "Mik: Hoparlör AEC", fontSize = 11.sp) }
+            )
+
+            if (!weakMeasuresFilter.isNullOrEmpty()) {
+                FilterChip(
+                    selected = true,
+                    onClick = { weakMeasuresFilter = null; currentBeat = 0f; pitchHistory.clear() },
+                    label = { Text("Tüm Parçaya Dön", fontSize = 11.sp) }
+                )
+            }
 
             FilterChip(
                 selected = playMetronomeDuringRecord,
@@ -479,7 +538,7 @@ fun NotaUyumuStudioApp() {
                 }
                 DropdownMenu(expanded = tolMenuExpanded, onDismissRequest = { tolMenuExpanded = false }) {
                     ToleranceLevel.entries.forEach { t ->
-                        DropdownMenuItem(text = { Text(t.label) }, onClick = { tolerance = t; tolMenuExpanded = false })
+                        DropdownMenuItem(text = { Text(t.label) }, onClick = { tolerance = t; customToleranceCents = t.cents; tolMenuExpanded = false })
                     }
                 }
             }
@@ -510,6 +569,28 @@ fun NotaUyumuStudioApp() {
                     fontWeight = FontWeight.Bold
                 )
             }
+        }
+
+        // Doğruluk Toleransı & Başarı Oranı Belirleme
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("±${customToleranceCents}c", color = Color(0xFF7DD3FC), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Slider(
+                value = customToleranceCents.toFloat(),
+                onValueChange = { if (!isRecording) customToleranceCents = it.toInt() },
+                valueRange = 10f..100f,
+                modifier = Modifier.weight(1f)
+            )
+            Text("Hedef %$passingAccuracyPercent", color = Color(0xFF34D399), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Slider(
+                value = passingAccuracyPercent.toFloat(),
+                onValueChange = { if (!isRecording) passingAccuracyPercent = it.toInt() },
+                valueRange = 40f..95f,
+                modifier = Modifier.weight(1f)
+            )
         }
 
         // Tempo & Noise Gate Slider
@@ -637,7 +718,7 @@ fun NotaUyumuStudioApp() {
             isRecording = isRecording,
             countInBeat = countInBeat,
             transposeOctaves = transposeOctaves,
-            toleranceCents = tolerance.cents,
+            toleranceCents = customToleranceCents,
             pitchHistory = pitchHistory,
             referenceContour = referenceContour,
             targetMidi = liveTargetMidi,
@@ -653,13 +734,26 @@ fun NotaUyumuStudioApp() {
         ScoreSummaryModal(
             summary = s,
             parts = score.parts,
+            hasAudioExport = audioEngine.hasRecordedAudio(),
             onClose = { summary = null },
             onRetry = {
                 summary = null
                 startRecordingFlow()
             },
+            onPracticeWeakSpots = { measures ->
+                summary = null
+                weakMeasuresFilter = measures
+                currentBeat = 0f
+                pitchHistory.clear()
+                statusMsg = "Hatalı ölçüler (${measures.joinToString(", ")}) çalışma moduna alındı."
+            },
+            onExportWav = {
+                val safeName = selectedPart.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                wavExportLauncher.launch("NotaUyumu_${safeName}.wav")
+            },
             onSwitchPart = { newPartId ->
                 summary = null
+                weakMeasuresFilter = null
                 selectedPartId = newPartId
                 currentBeat = 0f
                 pitchHistory.clear()

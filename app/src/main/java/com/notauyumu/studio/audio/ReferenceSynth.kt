@@ -15,7 +15,7 @@ import kotlin.math.min
 import kotlin.math.sin
 
 class ReferenceSynth {
-    private val sampleRate = 44100
+    private val sampleRate = 48000
     private var playJob: Job? = null
     private var guideJob: Job? = null
 
@@ -28,41 +28,41 @@ class ReferenceSynth {
 
     fun playTone(midi: Int, durationSec: Float = 1.2f) {
         playJob?.cancel()
-        playJob = CoroutineScope(Dispatchers.Default).launch {
-            playPcmTone(YinDetector.midiToFrequency(midi), durationSec)
+        playJob = CoroutineScope(Dispatchers.IO).launch {
+            playPcmStream(YinDetector.midiToFrequency(midi), durationSec, amplitude = 0.40)
         }
     }
 
     fun playMetronomeClick(accent: Boolean) {
-        CoroutineScope(Dispatchers.Default).launch {
-            val freq = if (accent) 1200.0 else 880.0
-            playPcmTone(freq, 0.08f, amplitude = if (accent) 0.40 else 0.24)
+        CoroutineScope(Dispatchers.IO).launch {
+            val freq = if (accent) 1100.0 else 820.0
+            playPcmStream(freq, 0.06f, amplitude = if (accent) 0.35 else 0.22)
         }
     }
 
     fun playFirstNote(notes: List<NoteEvent>, transposeOctaves: Int) {
         val first = notes.firstOrNull { !it.isRest && it.midi != null } ?: return
         val midi = (first.midi ?: return) + transposeOctaves * 12
-        playTone(midi, 1.4f)
+        playTone(midi, 1.3f)
     }
 
     fun playPart(
         notes: List<NoteEvent>,
         bpm: Int,
         transposeOctaves: Int,
-        amplitude: Double = 0.35,
+        amplitude: Double = 0.38,
         onBeatProgress: ((Float) -> Unit)? = null,
         onComplete: (() -> Unit)? = null
     ) {
         stopAll()
         val secPerBeat = 60f / bpm
-        playJob = CoroutineScope(Dispatchers.Default).launch {
+        playJob = CoroutineScope(Dispatchers.IO).launch {
             for (n in notes) {
                 if (!isActive) break
                 onBeatProgress?.invoke(n.startBeat)
                 val durSec = (n.durationBeats * secPerBeat).coerceAtLeast(0.12f)
                 if (!n.isRest && n.midi != null) {
-                    playPcmTone(
+                    playPcmStream(
                         YinDetector.midiToFrequency(n.midi + transposeOctaves * 12),
                         durSec * 0.92f,
                         amplitude = amplitude
@@ -80,18 +80,15 @@ class ReferenceSynth {
         }
     }
 
-    /**
-     * Kayıt sırasında kullanıcı söylerken eşzamanlı olarak seçili partiyi rehber ses olarak çalar.
-     */
     fun startGuideDuringRecording(notes: List<NoteEvent>, bpm: Int, transposeOctaves: Int) {
         guideJob?.cancel()
         val secPerBeat = 60f / bpm
-        guideJob = CoroutineScope(Dispatchers.Default).launch {
+        guideJob = CoroutineScope(Dispatchers.IO).launch {
             for (n in notes) {
                 if (!isActive) break
                 val durSec = (n.durationBeats * secPerBeat).coerceAtLeast(0.12f)
                 if (!n.isRest && n.midi != null) {
-                    playPcmTone(
+                    playPcmStream(
                         YinDetector.midiToFrequency(n.midi + transposeOctaves * 12),
                         durSec * 0.90f,
                         amplitude = 0.16
@@ -105,24 +102,35 @@ class ReferenceSynth {
         }
     }
 
-    private suspend fun playPcmTone(freq: Double, durationSec: Float, amplitude: Double = 0.35) {
-        val numSamples = (sampleRate * durationSec).toInt().coerceAtLeast(1)
-        val pcm = ShortArray(numSamples)
-        val attackSamples = min(numSamples / 4, (sampleRate * 0.025).toInt())
-        val releaseSamples = min(numSamples / 3, (sampleRate * 0.08).toInt())
+    /**
+     * 48 kHz MODE_STREAM AudioTrack ile tüm Android cihazlarda kaymasız ve temiz frekans üretimi.
+     */
+    private suspend fun playPcmStream(freq: Double, durationSec: Float, amplitude: Double) {
+        val totalSamples = (sampleRate * durationSec).toInt().coerceAtLeast(1)
+        val pcm = ShortArray(totalSamples)
+        val attackSamples = min(totalSamples / 4, (sampleRate * 0.020).toInt())
+        val releaseSamples = min(totalSamples / 3, (sampleRate * 0.060).toInt())
 
-        for (i in 0 until numSamples) {
+        for (i in 0 until totalSamples) {
             val env = when {
                 i < attackSamples -> i.toDouble() / attackSamples
-                i > numSamples - releaseSamples -> (numSamples - i).toDouble() / releaseSamples
+                i > totalSamples - releaseSamples -> (totalSamples - i).toDouble() / releaseSamples
                 else -> 1.0
             }
             val phase = 2.0 * PI * freq * i / sampleRate
-            val sample = (sin(phase) * 0.85 + sin(phase * 2.0) * 0.15) * amplitude * env
+            // Saf sinüs ağırlıklı net referans tonu (perde karışıklığı yapmaz)
+            val sample = sin(phase) * amplitude * env
             pcm[i] = (sample * Short.MAX_VALUE).toInt()
                 .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                 .toShort()
         }
+
+        val minBufBytes = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        val bufBytes = maxOf(minBufBytes, 4096)
 
         val track = AudioTrack.Builder()
             .setAudioAttributes(
@@ -138,14 +146,21 @@ class ReferenceSynth {
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
-            .setBufferSizeInBytes(pcm.size * 2)
-            .setTransferMode(AudioTrack.MODE_STATIC)
+            .setBufferSizeInBytes(bufBytes)
+            .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
         try {
-            track.write(pcm, 0, pcm.size)
             track.play()
-            delay((durationSec * 1000).toLong() + 10L)
+            var offset = 0
+            val chunkSize = 2048
+            while (offset < totalSamples) {
+                val count = min(chunkSize, totalSamples - offset)
+                val written = track.write(pcm, offset, count)
+                if (written <= 0) break
+                offset += written
+            }
+            delay(40L)
         } finally {
             try {
                 track.stop()

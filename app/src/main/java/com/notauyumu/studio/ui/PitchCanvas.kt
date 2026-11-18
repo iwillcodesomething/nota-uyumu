@@ -16,7 +16,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -66,6 +72,9 @@ fun PitchCanvas(
             isAntiAlias = true
         }
     }
+    var verticalMidiOffset by remember { mutableFloatStateOf(0f) }
+    var horizontalBeatOffset by remember { mutableFloatStateOf(0f) }
+
     val noteTextPaint = remember {
         Paint().apply {
             color = android.graphics.Color.parseColor("#E2E8F0")
@@ -123,24 +132,51 @@ fun PitchCanvas(
                 "${if (r > 0) "+" else ""}$r c $dir"
             } else "Bekleniyor"
 
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(badgeBg)
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
-            ) {
-                Text(devText, color = badgeFg, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (verticalMidiOffset != 0f || horizontalBeatOffset != 0f) {
+                    TextButton(onClick = { verticalMidiOffset = 0f; horizontalBeatOffset = 0f }) {
+                        Text("Ortala", color = Color(0xFF38BDF8), fontSize = 11.sp)
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(badgeBg)
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(devText, color = badgeFg, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
 
-        // 60 FPS Piano Roll Canvas
-        Box(modifier = Modifier.fillMaxSize()) {
+        // 60 FPS Piano Roll Canvas (Dikey & Yatay Kaydırılabilir)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        verticalMidiOffset = (verticalMidiOffset + dragAmount.y / 22f).coerceIn(-30f, 30f)
+                        horizontalBeatOffset = (horizontalBeatOffset - dragAmount.x / 95f).coerceIn(-16f, 64f)
+                    }
+                }
+        ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
-                val playable = notes.filter { !it.isRest && it.midi != null }.map { it.midi!! + transposeOctaves * 12 }
-                val minMidi = (playable.minOrNull() ?: 60) - 5f
-                val maxMidi = (playable.maxOrNull() ?: 72) + 5f
+                val hasRef = referenceContour.isNotEmpty()
+                val playable = if (hasRef) {
+                    referenceContour.mapNotNull { it.midiFloat?.roundToInt() }
+                } else {
+                    notes.filter { !it.isRest && it.midi != null }.map { it.midi!! + transposeOctaves * 12 }
+                }
+                val userMidis = pitchHistory.mapNotNull { it.midiFloat?.roundToInt() }
+                val allMidis = playable + userMidis
+                val baseMin = (allMidis.minOrNull() ?: 45) - 6f
+                val baseMax = (allMidis.maxOrNull() ?: 74) + 5f
+                val minMidi = (baseMin + verticalMidiOffset).coerceAtLeast(24f)
+                val maxMidi = (baseMax + verticalMidiOffset).coerceAtMost(108f)
+                val effectiveBeat = currentBeat + horizontalBeatOffset
                 val midiSpan = max(12f, maxMidi - minMidi)
 
                 val leftAxis = 76f
@@ -170,17 +206,17 @@ fun PitchCanvas(
                 }
 
                 val blockH = ((h - 60f) / midiSpan).coerceIn(22f, 38f)
-                val minVisBeat = currentBeat - (playheadX - leftAxis) / pxPerBeat
-                val maxVisBeat = currentBeat + (w - playheadX) / pxPerBeat
+                val minVisBeat = effectiveBeat - (playheadX - leftAxis) / pxPerBeat
+                val maxVisBeat = effectiveBeat + (w - playheadX) / pxPerBeat
 
-                // Hedef nota blokları
-                for (n in notes) {
+                // Hedef nota blokları (Referans ses kaydı yüklü değilse çiz)
+                if (!hasRef) for (n in notes) {
                     if (n.isRest || n.midi == null) continue
                     val endB = n.startBeat + n.durationBeats
                     if (endB < minVisBeat || n.startBeat > maxVisBeat) continue
 
                     val tMidi = n.midi + transposeOctaves * 12
-                    val x = playheadX + (n.startBeat - currentBeat) * pxPerBeat
+                    val x = playheadX + (n.startBeat - effectiveBeat) * pxPerBeat
                     val bw = max(16f, n.durationBeats * pxPerBeat - 6f)
                     val y = midiToY(tMidi.toFloat()) - blockH / 2f
                     val active = isRecording && currentBeat >= n.startBeat && currentBeat < endB
@@ -227,8 +263,8 @@ fun PitchCanvas(
 
                         val beat1 = p.timeSec * (bpm / 60f)
                         val beat2 = c.timeSec * (bpm / 60f)
-                        val x1 = playheadX + (beat1 - currentBeat) * pxPerBeat
-                        val x2 = playheadX + (beat2 - currentBeat) * pxPerBeat
+                        val x1 = playheadX + (beat1 - effectiveBeat) * pxPerBeat
+                        val x2 = playheadX + (beat2 - effectiveBeat) * pxPerBeat
                         if (x2 < leftAxis || x1 > w) continue
 
                         drawLine(
@@ -249,9 +285,9 @@ fun PitchCanvas(
                         if (prev.midiFloat == null || curr.midiFloat == null) continue
                         if (curr.beat - prev.beat > 0.35f) continue
 
-                        val x1 = playheadX + (prev.beat - currentBeat) * pxPerBeat
+                        val x1 = playheadX + (prev.beat - effectiveBeat) * pxPerBeat
                         val y1 = midiToY(prev.midiFloat)
-                        val x2 = playheadX + (curr.beat - currentBeat) * pxPerBeat
+                        val x2 = playheadX + (curr.beat - effectiveBeat) * pxPerBeat
                         val y2 = midiToY(curr.midiFloat)
                         if (x2 < leftAxis || x1 > w) continue
 

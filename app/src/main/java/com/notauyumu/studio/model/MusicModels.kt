@@ -35,7 +35,9 @@ data class PartData(
 
 data class ScoreData(
     val title: String,
-    val parts: List<PartData>
+    val parts: List<PartData>,
+    val bpm: Int = 80,
+    val beatsPerMeasure: Int = 4
 )
 
 data class ReferencePitchPoint(
@@ -63,7 +65,8 @@ data class NoteAccuracyReport(
     val midi: Int,
     val durationBeats: Float,
     val accuracyPercent: Int,
-    val avgCentsOff: Int?
+    val avgCentsOff: Int?,
+    val meanAbsCents: Int?
 )
 
 data class PerformanceSummary(
@@ -72,6 +75,11 @@ data class PerformanceSummary(
     val overallAccuracy: Int,
     val referenceMatchPercent: Int?,
     val avgCentsOff: Int,
+    val meanAbsCentsError: Int,
+    val maxCentsError: Int,
+    val wrongNoteRatePercent: Int,
+    val silentRatePercent: Int,
+    val weakMeasures: List<Int>,
     val tendencyLabel: String,
     val noteBreakdown: List<NoteAccuracyReport>,
     val totalTargetNotes: Int,

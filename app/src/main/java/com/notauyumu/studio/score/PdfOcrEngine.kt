@@ -253,8 +253,8 @@ object PdfOcrEngine {
 
                     val rx = max(3, (d * 0.58f).roundToInt())
                     val ry = max(3, (d * 0.45f).roundToInt())
-                    val yMin = max(ry + 1, (staff.topY - d * 2.5f).toInt())
-                    val yMax = min(h - ry - 2, (staff.bottomY + d * 2.5f).toInt())
+                    val yMin = max(ry + 2, (staff.topY - d * 1.6f).toInt())
+                    val yMax = min(h - ry - 3, (staff.bottomY + d * 1.6f).toInt())
                     val stepX = max(2, (d * 0.25f).roundToInt())
                     val stepY = max(1, (d * 0.2f).roundToInt())
 
@@ -283,10 +283,31 @@ object PdfOcrEngine {
                             }
                             val fillR = if (total > 0) filled.toFloat() / total else 0f
                             val innerR = if (innerTotal > 0) innerFilled.toFloat() / innerTotal else 0f
-                            val isSolid = fillR >= 0.56f && innerR >= 0.65f
-                            val isHollow = !isSolid && fillR in 0.22f..0.62f && innerR <= 0.45f
+                            val isSolid = fillR >= 0.58f && innerR >= 0.68f
+                            val isHollow = !isSolid && fillR in 0.24f..0.60f && innerR <= 0.42f
                             if (isSolid || isHollow) {
-                                cands.add(NoteCandidate(x, y, if (isSolid) fillR else fillR + 0.15f, isHollow))
+                                // Çevre halkası kontrolü: gerçek nota başının etrafı çoğunlukla boştur (metin/bağ bloğu değil)
+                                var extFilled = 0
+                                var extTotal = 0
+                                val erx = rx + 2
+                                val ery = ry + 2
+                                for (dy in -ery..ery) {
+                                    for (dx in -erx..erx) {
+                                        val norm = (dx * dx).toFloat() / (rx * rx) + (dy * dy).toFloat() / (ry * ry)
+                                        if (norm in 1.25f..2.2f) {
+                                            val yy = y + dy
+                                            val xx = x + dx
+                                            if (yy in 0 until h && xx in 0 until w) {
+                                                extTotal++
+                                                if (cleanInk[yy * w + xx].toInt() == 1) extFilled++
+                                            }
+                                        }
+                                    }
+                                }
+                                val extR = if (extTotal > 0) extFilled.toFloat() / extTotal else 0f
+                                if (extR < 0.36f) {
+                                    cands.add(NoteCandidate(x, y, if (isSolid) fillR else fillR + 0.15f, isHollow))
+                                }
                             }
                             y += stepY
                         }
@@ -409,6 +430,8 @@ object PdfOcrEngine {
         var durationVal = 1f
         var clefSign = "G"
         var clefLine = "2"
+        var docBpm = 80
+        var docBeatsPerMeasure = 4
 
         var eventType = parser.eventType
         while (eventType != XmlPullParser.END_DOCUMENT) {
@@ -430,6 +453,15 @@ object PdfOcrEngine {
                         measureNum = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: measureNum
                     }
                     "divisions" -> divisions = parser.nextText().toFloatOrNull()?.coerceAtLeast(1f) ?: 1f
+                    "beats" -> docBeatsPerMeasure = parser.nextText().toIntOrNull()?.coerceIn(2, 12) ?: docBeatsPerMeasure
+                    "sound" -> {
+                        val t = parser.getAttributeValue(null, "tempo")?.toFloatOrNull()?.roundToInt()
+                        if (t != null && t in 30..240) docBpm = t
+                    }
+                    "per-minute" -> {
+                        val t = parser.nextText().toFloatOrNull()?.roundToInt()
+                        if (t != null && t in 30..240) docBpm = t
+                    }
                     "sign" -> clefSign = parser.nextText().trim()
                     "line" -> clefLine = parser.nextText().trim()
                     "note" -> {
@@ -481,7 +513,7 @@ object PdfOcrEngine {
         }
 
         if (parts.isEmpty()) throw IllegalStateException("MusicXML içinde nota bulunamadı.")
-        return ScoreData(title = fileName, parts = parts)
+        return ScoreData(title = fileName, parts = parts, bpm = docBpm, beatsPerMeasure = docBeatsPerMeasure)
     }
 
     fun diatonicStepToMidi(step: Int, clef: ClefType): Int {
@@ -517,14 +549,20 @@ object PdfOcrEngine {
         part: PartData,
         frames: List<PitchFrame>,
         toleranceCents: Int,
-        transposeOctaves: Int
+        transposeOctaves: Int,
+        passingThresholdPercent: Int = 60
     ): PerformanceSummary {
         val breakdown = mutableListOf<NoteAccuracyReport>()
         var totalFrames = 0
         var totalHit = 0
         var voicedSum = 0f
+        var voicedAbsSum = 0f
         var voicedCount = 0
+        var maxAbsCents = 0f
+        var wrongFrames = 0
+        var silentFrames = 0
         var hitNotes = 0
+        val weakMeasuresSet = linkedSetOf<Int>()
 
         var refTotal = 0
         var refHit = 0
@@ -532,9 +570,7 @@ object PdfOcrEngine {
         for (f in frames) {
             if (f.referenceMidi != null && f.midiFloat != null) {
                 refTotal++
-                if (abs((f.midiFloat - f.referenceMidi) * 100f) <= toleranceCents) {
-                    refHit++
-                }
+                if (abs((f.midiFloat - f.referenceMidi) * 100f) <= toleranceCents) refHit++
             } else if (f.referenceMidi != null) {
                 refTotal++
             }
@@ -546,21 +582,30 @@ object PdfOcrEngine {
             val noteFrames = frames.filter { it.beat >= n.startBeat && it.beat < n.startBeat + n.durationBeats }
             var nHit = 0
             var nSum = 0f
+            var nAbsSum = 0f
             var nCnt = 0
 
             for (f in noteFrames) {
                 if (f.midiFloat != null) {
                     val cents = (f.midiFloat - targetMidi) * 100f
-                    if (abs(cents) <= toleranceCents) nHit++
-                    if (abs(cents) <= 250f) {
-                        nSum += cents; nCnt++
-                        voicedSum += cents; voicedCount++
+                    val absC = abs(cents)
+                    if (absC <= toleranceCents) nHit++ else wrongFrames++
+                    if (absC > maxAbsCents && absC <= 1200f) maxAbsCents = absC
+                    if (absC <= 600f) {
+                        nSum += cents
+                        nAbsSum += absC
+                        nCnt++
+                        voicedSum += cents
+                        voicedAbsSum += absC
+                        voicedCount++
                     }
+                } else {
+                    silentFrames++
                 }
             }
 
             val pct = if (noteFrames.isNotEmpty()) ((nHit.toFloat() / noteFrames.size) * 100f).roundToInt() else 0
-            if (pct >= 60) hitNotes++
+            if (pct >= passingThresholdPercent) hitNotes++ else weakMeasuresSet.add(n.measure)
             totalFrames += noteFrames.size
             totalHit += nHit
 
@@ -572,7 +617,8 @@ object PdfOcrEngine {
                     midi = targetMidi,
                     durationBeats = n.durationBeats,
                     accuracyPercent = pct,
-                    avgCentsOff = if (nCnt > 0) (nSum / nCnt).roundToInt() else null
+                    avgCentsOff = if (nCnt > 0) (nSum / nCnt).roundToInt() else null,
+                    meanAbsCents = if (nCnt > 0) (nAbsSum / nCnt).roundToInt() else null
                 )
             )
         }
@@ -580,11 +626,15 @@ object PdfOcrEngine {
         val overall = if (totalFrames > 0) ((totalHit.toFloat() / totalFrames) * 100f).roundToInt() else 0
         val refMatch = if (refTotal > 0) ((refHit.toFloat() / refTotal) * 100f).roundToInt() else null
         val avgCents = if (voicedCount > 0) (voicedSum / voicedCount).roundToInt() else 0
+        val meanAbs = if (voicedCount > 0) (voicedAbsSum / voicedCount).roundToInt() else 0
+        val wrongRate = if (totalFrames > 0) ((wrongFrames.toFloat() / totalFrames) * 100f).roundToInt() else 0
+        val silentRate = if (totalFrames > 0) ((silentFrames.toFloat() / totalFrames) * 100f).roundToInt() else 0
+
         val tendencyLabel = when {
             voicedCount < 5 -> "Yeterli ses algılanamadı. Mikrofonu veya Noise Gate eşiğini kontrol edin."
-            avgCents > 10 -> "Tiz (Sürtone) Eğilim: Ortalama +$avgCents cent yukarıda kalma eğilimindesiniz."
-            avgCents < -10 -> "Pes (Detone) Eğilim: Ortalama $avgCents cent aşağıda kalma eğilimindesiniz."
-            else -> "Dengeli Entonasyon: Ses merkeziniz hedef perdelerle uyumlu."
+            avgCents > 10 -> "Tiz (Sürtone) Eğilim: Ortalama +$avgCents cent (mutlak ±$meanAbs c) sapma."
+            avgCents < -10 -> "Pes (Detone) Eğilim: Ortalama $avgCents cent (mutlak ±$meanAbs c) sapma."
+            else -> "Dengeli Entonasyon: Ortalama mutlak sapma ±$meanAbs cent."
         }
 
         return PerformanceSummary(
@@ -593,6 +643,11 @@ object PdfOcrEngine {
             overallAccuracy = overall,
             referenceMatchPercent = refMatch,
             avgCentsOff = avgCents,
+            meanAbsCentsError = meanAbs,
+            maxCentsError = maxAbsCents.roundToInt(),
+            wrongNoteRatePercent = wrongRate,
+            silentRatePercent = silentRate,
+            weakMeasures = weakMeasuresSet.toList(),
             tendencyLabel = tendencyLabel,
             noteBreakdown = breakdown,
             totalTargetNotes = breakdown.size,
