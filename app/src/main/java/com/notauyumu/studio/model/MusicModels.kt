@@ -1,5 +1,18 @@
 package com.notauyumu.studio.model
 
+enum class ReferenceVoiceFilter(
+    val label: String,
+    val minFreq: Float,
+    val maxFreq: Float
+) {
+    SCORE_GUIDED("PDF Rehberli Ayır", 65f, 1400f),
+    ALL("Tümü (Solo)", 65f, 1400f),
+    BASS("Bas Ayır (75-250 Hz)", 75f, 250f),
+    TENOR("Tenor Ayır (120-480 Hz)", 120f, 480f),
+    ALTO("Alto Ayır (175-700 Hz)", 175f, 700f),
+    SOPRANO("Soprano Ayır (260-1200 Hz)", 260f, 1200f)
+}
+
 enum class ClefType(val label: String) {
     TREBLE("Sol Anahtarı"),
     BASS("Fa Anahtarı"),

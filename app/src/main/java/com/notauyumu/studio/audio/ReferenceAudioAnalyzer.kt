@@ -5,20 +5,31 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import com.notauyumu.studio.model.NoteEvent
 import com.notauyumu.studio.model.ReferencePitchPoint
+import com.notauyumu.studio.model.ReferenceVoiceFilter
 import java.nio.ByteOrder
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 object ReferenceAudioAnalyzer {
 
     /**
-     * Yüklenen referans ses kaydını (MP3, WAV, M4A, OGG) native MediaExtractor + MediaCodec ile çözer
-     * ve YIN algoritmasıyla zaman-eksenli referans perde eğrisini (pitch contour) çıkarır.
+     * Yüklenen referans ses kaydını (MP3, WAV, M4A, OGG) çözer.
+     * voiceFilter == SCORE_GUIDED ise seçili PDF/MusicXML partisinin o andaki beklenen notası
+     * etrafında (±3.5 yarım ton) dinamik Biquad bant geçiren filtre uygulayarak o partiyi kayıttan ayırır.
      */
     fun analyzeReferenceAudio(
         context: Context,
         uri: Uri,
-        rmsThreshold: Float = 0.012f
+        rmsThreshold: Float = 0.012f,
+        voiceFilter: ReferenceVoiceFilter = ReferenceVoiceFilter.ALL,
+        guideNotes: List<NoteEvent> = emptyList(),
+        bpm: Int = 80,
+        transposeOctaves: Int = 0
     ): List<ReferencePitchPoint> {
         val extractor = MediaExtractor()
         extractor.setDataSource(context, uri, null)
@@ -103,19 +114,58 @@ object ReferenceAudioAnalyzer {
             extractor.release()
         }
 
-        // Kayan pencere (2048 örneklem, her 25ms'de bir adım) ile YIN perde analizi
+        val rawSignal = FloatArray(monoSamples.size) { monoSamples[it] }
+        val filteredSignal = rawSignal.copyOf()
+
+        if (voiceFilter != ReferenceVoiceFilter.ALL && voiceFilter != ReferenceVoiceFilter.SCORE_GUIDED) {
+            applyBiquadHighPass(filteredSignal, sampleRate.toDouble(), voiceFilter.minFreq.toDouble())
+            applyBiquadLowPass(filteredSignal, sampleRate.toDouble(), voiceFilter.maxFreq.toDouble())
+            applyBiquadLowPass(filteredSignal, sampleRate.toDouble(), voiceFilter.maxFreq.toDouble())
+        }
+
         val windowSize = 2048
         val hopSize = (sampleRate * 0.025f).toInt().coerceAtLeast(256)
         val contour = mutableListOf<ReferencePitchPoint>()
         val windowBuf = FloatArray(windowSize)
 
         var pos = 0
-        while (pos + windowSize <= monoSamples.size) {
-            for (k in 0 until windowSize) {
-                windowBuf[k] = monoSamples[pos + k]
-            }
-            val yin = YinDetector.detectPitch(windowBuf, sampleRate, rmsThreshold)
+        while (pos + windowSize <= rawSignal.size) {
             val timeSec = pos.toFloat() / sampleRate
+            var minF = voiceFilter.minFreq
+            var maxF = voiceFilter.maxFreq
+
+            if (voiceFilter == ReferenceVoiceFilter.SCORE_GUIDED && guideNotes.isNotEmpty()) {
+                val beat = timeSec * (bpm / 60f)
+                val note = guideNotes.find { beat >= it.startBeat && beat < it.startBeat + it.durationBeats }
+                if (note == null || note.isRest || note.midi == null) {
+                    contour.add(ReferencePitchPoint(timeSec, null, null))
+                    pos += hopSize
+                    continue
+                }
+                val expectedFreq = YinDetector.midiToFrequency(note.midi + transposeOctaves * 12).toFloat()
+                // ±3.5 yarım tonluk dinamik bant geçiren pencere
+                minF = (expectedFreq * 0.81f).coerceAtLeast(55f)
+                maxF = (expectedFreq * 1.23f).coerceAtMost(1500f)
+
+                for (k in 0 until windowSize) {
+                    windowBuf[k] = rawSignal[pos + k]
+                }
+                applyBiquadHighPass(windowBuf, sampleRate.toDouble(), minF.toDouble())
+                applyBiquadLowPass(windowBuf, sampleRate.toDouble(), maxF.toDouble())
+                applyBiquadLowPass(windowBuf, sampleRate.toDouble(), maxF.toDouble())
+            } else {
+                for (k in 0 until windowSize) {
+                    windowBuf[k] = filteredSignal[pos + k]
+                }
+            }
+
+            val yin = YinDetector.detectPitch(
+                buffer = windowBuf,
+                sampleRate = sampleRate,
+                rmsThreshold = rmsThreshold * 0.65f,
+                minFreq = minF,
+                maxFreq = maxF
+            )
             val midiFloat = yin.frequency?.let { YinDetector.frequencyToMidiFloat(it) }
             contour.add(
                 ReferencePitchPoint(
@@ -130,9 +180,48 @@ object ReferenceAudioAnalyzer {
         return contour
     }
 
-    /**
-     * Belirli bir saniyedeki referans perdeyi (varsa) en yakın komşudan döndürür.
-     */
+    private fun applyBiquadLowPass(samples: FloatArray, sampleRate: Double, cutoffHz: Double) {
+        val w0 = 2.0 * PI * cutoffHz / sampleRate
+        val cosW0 = cos(w0)
+        val alpha = sin(w0) / sqrt(2.0)
+        val a0 = 1.0 + alpha
+        val b0 = ((1.0 - cosW0) / 2.0) / a0
+        val b1 = (1.0 - cosW0) / a0
+        val b2 = b0
+        val a1 = (-2.0 * cosW0) / a0
+        val a2 = (1.0 - alpha) / a0
+        runBiquad(samples, b0, b1, b2, a1, a2)
+    }
+
+    private fun applyBiquadHighPass(samples: FloatArray, sampleRate: Double, cutoffHz: Double) {
+        val w0 = 2.0 * PI * cutoffHz / sampleRate
+        val cosW0 = cos(w0)
+        val alpha = sin(w0) / sqrt(2.0)
+        val a0 = 1.0 + alpha
+        val b0 = ((1.0 + cosW0) / 2.0) / a0
+        val b1 = (-(1.0 + cosW0)) / a0
+        val b2 = b0
+        val a1 = (-2.0 * cosW0) / a0
+        val a2 = (1.0 - alpha) / a0
+        runBiquad(samples, b0, b1, b2, a1, a2)
+    }
+
+    private fun runBiquad(samples: FloatArray, b0: Double, b1: Double, b2: Double, a1: Double, a2: Double) {
+        var x1 = 0.0
+        var x2 = 0.0
+        var y1 = 0.0
+        var y2 = 0.0
+        for (i in samples.indices) {
+            val x0 = samples[i].toDouble()
+            val y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2 = x1
+            x1 = x0
+            y2 = y1
+            y1 = y0
+            samples[i] = y0.toFloat()
+        }
+    }
+
     fun getReferenceMidiAtTime(contour: List<ReferencePitchPoint>, timeSec: Float): Float? {
         if (contour.isEmpty()) return null
         var low = 0

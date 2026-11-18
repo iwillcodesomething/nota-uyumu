@@ -69,6 +69,7 @@ import com.notauyumu.studio.model.PerformanceSummary
 import com.notauyumu.studio.model.PitchFrame
 import com.notauyumu.studio.model.PitchStatus
 import com.notauyumu.studio.model.ReferencePitchPoint
+import com.notauyumu.studio.model.ReferenceVoiceFilter
 import com.notauyumu.studio.model.ToleranceLevel
 import com.notauyumu.studio.score.PdfOcrEngine
 import com.notauyumu.studio.ui.PitchCanvas
@@ -113,6 +114,8 @@ fun NotaUyumuStudioApp() {
     var referenceUri by remember { mutableStateOf<Uri?>(null) }
     var referenceName by remember { mutableStateOf<String?>(null) }
     var referenceContour by remember { mutableStateOf<List<ReferencePitchPoint>>(emptyList()) }
+    var refVoiceFilter by remember { mutableStateOf(ReferenceVoiceFilter.ALL) }
+    var refFilterMenuExpanded by remember { mutableStateOf(false) }
 
     // Hazırlık & Eşzamanlı Kayıt Ayarları
     var bpm by remember { mutableIntStateOf(80) }
@@ -408,6 +411,10 @@ fun NotaUyumuStudioApp() {
                     bpm = parsed.bpm
                     statusMsg = "${parsed.parts.size} parti MusicXML dosyasından yüklendi."
                 }
+                referenceUri = null
+                referenceName = null
+                referenceContour = emptyList()
+                weakMeasuresFilter = null
                 currentBeat = 0f
                 pitchHistory.clear()
             } catch (e: Exception) {
@@ -433,7 +440,7 @@ fun NotaUyumuStudioApp() {
             try {
                 val name = resolveFileName(context, uri)
                 val contour = withContext(Dispatchers.Default) {
-                    ReferenceAudioAnalyzer.analyzeReferenceAudio(context, uri, rmsThreshold)
+                    ReferenceAudioAnalyzer.analyzeReferenceAudio(context, uri, rmsThreshold, refVoiceFilter, selectedPart.notes, bpm, transposeOctaves)
                 }
                 referenceUri = uri
                 referenceName = name
@@ -468,6 +475,48 @@ fun NotaUyumuStudioApp() {
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (referenceUri != null) {
+                    Box {
+                        OutlinedButton(onClick = { refFilterMenuExpanded = true }) {
+                            Text(refVoiceFilter.label.substringBefore(" "), fontSize = 11.sp)
+                        }
+                        DropdownMenu(expanded = refFilterMenuExpanded, onDismissRequest = { refFilterMenuExpanded = false }) {
+                            ReferenceVoiceFilter.entries.forEach { vf ->
+                                DropdownMenuItem(
+                                    text = { Text(vf.label) },
+                                    onClick = {
+                                        refFilterMenuExpanded = false
+                                        refVoiceFilter = vf
+                                        val curUri = referenceUri ?: return@DropdownMenuItem
+                                        scope.launch {
+                                            statusMsg = "Referans kayıt '${vf.label}' filtresiyle yeniden ayrıştırılıyor..."
+                                            try {
+                                                val contour = withContext(Dispatchers.Default) {
+                                                    ReferenceAudioAnalyzer.analyzeReferenceAudio(context, curUri, rmsThreshold, vf, selectedPart.notes, bpm, transposeOctaves)
+                                                }
+                                                referenceContour = contour
+                                                statusMsg = "${vf.label} uygulandı (${contour.count { it.midiFloat != null }} perde noktası)."
+                                            } catch (e: Exception) {
+                                                statusMsg = "Filtreleme hatası: ${e.message}"
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            stopAll(false)
+                            referenceUri = null
+                            referenceName = null
+                            referenceContour = emptyList()
+                            statusMsg = "Nota moduna dönüldü."
+                        }
+                    ) {
+                        Text("Ref Kapat", fontSize = 11.sp, color = Color(0xFFFCA5A5))
+                    }
+                }
                 OutlinedButton(
                     onClick = { audioPickerLauncher.launch(arrayOf("audio/*")) }
                 ) {

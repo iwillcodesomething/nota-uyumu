@@ -57,8 +57,9 @@ fun ScoreSummaryModal(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("Performans Analiz Raporu", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            val isRefMode = summary.referenceMatchPercent != null
             Text(
-                "${summary.partName} — ${summary.hitNotesCount} / ${summary.totalTargetNotes} hedef nota isabetli",
+                if (isRefMode) "Referans Ses Kaydı Karşılaştırması" else "${summary.partName} — ${summary.hitNotesCount} / ${summary.totalTargetNotes} hedef nota isabetli",
                 color = Color(0xFF94A3B8),
                 fontSize = 11.sp
             )
@@ -82,14 +83,15 @@ fun ScoreSummaryModal(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        Text("${summary.partName} Doğruluk", color = Color(0xFF94A3B8), fontSize = 11.sp)
-                        Text("%${summary.overallAccuracy}", color = scoreCol, fontSize = 32.sp, fontWeight = FontWeight.Black)
-                    }
-                    summary.referenceMatchPercent?.let { refPct ->
-                        Column(horizontalAlignment = Alignment.End) {
+                    if (isRefMode) {
+                        Column {
                             Text("Referans Kayıt Uyumu", color = Color(0xFF7DD3FC), fontSize = 11.sp)
-                            Text("%$refPct", color = Color(0xFF38BDF8), fontSize = 26.sp, fontWeight = FontWeight.Black)
+                            Text("%${summary.referenceMatchPercent}", color = scoreCol, fontSize = 32.sp, fontWeight = FontWeight.Black)
+                        }
+                    } else {
+                        Column {
+                            Text("${summary.partName} Doğruluk", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                            Text("%${summary.overallAccuracy}", color = scoreCol, fontSize = 32.sp, fontWeight = FontWeight.Black)
                         }
                     }
                 }
@@ -105,9 +107,9 @@ fun ScoreSummaryModal(
                 Text(summary.tendencyLabel, color = Color(0xFFE2E8F0), fontSize = 11.sp)
             }
 
-            Text("Ölçü ve Nota Bazlı Döküm", color = Color(0xFF94A3B8), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            if (!isRefMode) Text("Ölçü ve Nota Bazlı Döküm", color = Color(0xFF94A3B8), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
 
-            LazyColumn(
+            if (!isRefMode) LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 170.dp),
