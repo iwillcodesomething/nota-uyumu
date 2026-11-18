@@ -1,0 +1,85 @@
+cat << 'EOF' > .github/workflows/build-apk.yml
+name: Build & Release Signed APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+
+      - name: JDK 17 Kur
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Gradle Kur ve Release APK Derle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - run: gradle assembleRelease --no-daemon
+
+      - name: Keystore Hazırla ve APK İmzala
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED_APK="app/build/outputs/apk/release/app-release-aligned.apk"
+          SIGNED_APK="NotaUyumu-Studio-signed.apk"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            KS_PASS="$KEYSTORE_PASSWORD"
+            K_ALIAS="$KEY_ALIAS"
+            K_PASS="$KEY_PASSWORD"
+          else
+            keytool -genkey -v -keystore release.keystore -alias notauyumu \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass notauyumu123 -keypass notauyumu123 \
+              -dname "CN=NotaUyumu Studio, O=NotaUyumu, C=TR"
+            KS_PASS="notauyumu123"
+            K_ALIAS="notauyumu"
+            K_PASS="notauyumu123"
+          fi
+
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "$BUILD_TOOLS/apksigner" sign --ks release.keystore \
+            --ks-pass "pass:$KS_PASS" \
+            --ks-key-alias "$K_ALIAS" \
+            --key-pass "pass:$K_PASS" \
+            --out "$SIGNED_APK" "$ALIGNED_APK"
+          "$BUILD_TOOLS/apksigner" verify "$SIGNED_APK"
+
+      - name: APK Çıktısını Artifacts Olarak Yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NotaUyumu-signed-apk
+          path: NotaUyumu-Studio-signed.apk
+
+      - name: Otomatik GitHub Release Oluştur
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          name: "NotaUyumu Studio ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v1.0.{0}', github.run_number) }}"
+          files: NotaUyumu-Studio-signed.apk
+          generate_release_notes: true
+EOF
+git add .github/workflows/build-apk.yml
+git commit -m "Otomatik imzali Release APK workflow eklendi"
+git push
+git tag v1.0.0 && git push origin v1.0.0
