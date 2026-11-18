@@ -114,7 +114,19 @@ object ReferenceAudioAnalyzer {
             extractor.release()
         }
 
-        val rawSignal = FloatArray(monoSamples.size) { monoSamples[it] }
+        var startIdx = 0
+        val trimThresh = (rmsThreshold * 0.9f).coerceAtLeast(0.008f)
+        while (startIdx < monoSamples.size - 1024) {
+            var s = 0f
+            for (k in 0 until 512) {
+                val v = monoSamples[startIdx + k]
+                s += v * v
+            }
+            if (kotlin.math.sqrt(s / 512f) >= trimThresh) break
+            startIdx += 256
+        }
+        val trimmedSize = (monoSamples.size - startIdx).coerceAtLeast(1)
+        val rawSignal = FloatArray(trimmedSize) { monoSamples[startIdx + it] }
         val filteredSignal = rawSignal.copyOf()
 
         if (voiceFilter != ReferenceVoiceFilter.ALL && voiceFilter != ReferenceVoiceFilter.SCORE_GUIDED) {
@@ -135,7 +147,13 @@ object ReferenceAudioAnalyzer {
             var maxF = voiceFilter.maxFreq
 
             if (voiceFilter == ReferenceVoiceFilter.SCORE_GUIDED && guideNotes.isNotEmpty()) {
-                val beat = timeSec * (bpm / 60f)
+                val totalScoreBeats = guideNotes.lastOrNull()?.let { it.startBeat + it.durationBeats } ?: 16f
+                val totalAudioSec = (rawSignal.size.toFloat() / sampleRate).coerceAtLeast(1f)
+                // Tutti kaydın hızı PDF temposundan farklı olsa bile oransal hizalama + BPM hibrit eşleme
+                val effectiveBpm = if (kotlin.math.abs((totalScoreBeats / (totalAudioSec / 60f)) - bpm) <= 35f) {
+                    (totalScoreBeats / (totalAudioSec / 60f))
+                } else bpm.toFloat()
+                val beat = timeSec * (effectiveBpm / 60f)
                 val note = guideNotes.find { beat >= it.startBeat && beat < it.startBeat + it.durationBeats }
                 if (note == null || note.isRest || note.midi == null) {
                     contour.add(ReferencePitchPoint(timeSec, null, null))
@@ -177,7 +195,19 @@ object ReferenceAudioAnalyzer {
             pos += hopSize
         }
 
-        return contour
+        // 5-noktalı medyan filtre ile anlık oktav sıçramalarını ve nefes gürültülerini temizle
+        return contour.mapIndexed { idx, pt ->
+            if (pt.midiFloat == null) pt
+            else {
+                val neighborMidis = (-2..2).mapNotNull { d ->
+                    contour.getOrNull(idx + d)?.midiFloat
+                }.sorted()
+                if (neighborMidis.size >= 3) {
+                    val medianMidi = neighborMidis[neighborMidis.size / 2]
+                    pt.copy(midiFloat = medianMidi)
+                } else pt
+            }
+        }
     }
 
     private fun applyBiquadLowPass(samples: FloatArray, sampleRate: Double, cutoffHz: Double) {

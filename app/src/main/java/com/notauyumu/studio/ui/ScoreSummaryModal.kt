@@ -42,6 +42,7 @@ fun ScoreSummaryModal(
     onClose: () -> Unit,
     onRetry: () -> Unit,
     onPracticeWeakSpots: (List<Int>) -> Unit,
+    onPlayRecordedVoice: () -> Unit,
     onExportWav: () -> Unit,
     onShareReport: () -> Unit,
     onSwitchPart: (String) -> Unit
@@ -178,6 +179,12 @@ fun ScoreSummaryModal(
                     }
                 }
                 if (hasAudioExport) {
+                    Button(
+                        onClick = onPlayRecordedVoice,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF38BDF8), contentColor = Color(0xFF020617))
+                    ) {
+                        Text("Kaydımı Dinle", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                     OutlinedButton(onClick = onExportWav) {
                         Text("Kaydı Dışa Aktar (.WAV)", fontSize = 11.sp)
                     }

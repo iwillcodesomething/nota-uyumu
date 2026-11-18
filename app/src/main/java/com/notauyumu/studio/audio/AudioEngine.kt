@@ -5,7 +5,9 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioAttributes
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.net.Uri
@@ -50,7 +52,51 @@ class AudioEngine {
         }
     }
 
+    private var playbackJob: Job? = null
+
     fun hasRecordedAudio(): Boolean = synchronized(pcmLock) { recordedPcm.size() > 0 }
+
+    fun playRecordedAudio() {
+        val bytes = synchronized(pcmLock) { recordedPcm.toByteArray() }
+        if (bytes.isEmpty()) return
+        playbackJob?.cancel()
+        playbackJob = CoroutineScope(Dispatchers.IO).launch {
+            val minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(maxOf(minBuf, 4096))
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            try {
+                track.play()
+                var offset = 0
+                while (offset < bytes.size && isActive) {
+                    val chunk = minOf(4096, bytes.size - offset)
+                    val written = track.write(bytes, offset, chunk)
+                    if (written <= 0) break
+                    offset += written
+                }
+            } finally {
+                try {
+                    track.stop()
+                    track.release()
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
 
     /**
      * Kaydedilen ham sesi standart 44.1 kHz 16-bit mono WAV dosyası olarak dışa aktarır.
@@ -192,6 +238,8 @@ class AudioEngine {
     fun stop() {
         captureJob?.cancel()
         captureJob = null
+        playbackJob?.cancel()
+        playbackJob = null
         try {
             echoCanceler?.release()
         } catch (_: Exception) {

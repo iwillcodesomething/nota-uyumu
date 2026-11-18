@@ -210,7 +210,7 @@ fun PitchCanvas(
                 val maxVisBeat = effectiveBeat + (w - playheadX) / pxPerBeat
 
                 // Hedef nota blokları (Referans ses kaydı yüklü değilse çiz)
-                if (!hasRef) for (n in notes) {
+                for (n in notes) {
                     if (n.isRest || n.midi == null) continue
                     val endB = n.startBeat + n.durationBeats
                     if (endB < minVisBeat || n.startBeat > maxVisBeat) continue

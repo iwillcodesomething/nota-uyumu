@@ -107,6 +107,9 @@ fun NotaUyumuStudioApp() {
     var score by remember { mutableStateOf(PdfOcrEngine.DEFAULT_SATB_SCORE) }
     var selectedPartId by remember { mutableStateOf(score.parts.first().id) }
     var weakMeasuresFilter by remember { mutableStateOf<List<Int>?>(null) }
+    var startMeasure by remember { mutableIntStateOf(1) }
+    var endMeasure by remember { mutableIntStateOf(999) }
+    var measureMenuExpanded by remember { mutableStateOf(false) }
     var pdfBitmaps by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var currentPage by remember { mutableIntStateOf(0) }
 
@@ -174,17 +177,27 @@ fun NotaUyumuStudioApp() {
     val baseSelectedPart = remember(score, selectedPartId) {
         score.parts.find { it.id == selectedPartId } ?: score.parts.first()
     }
-    val selectedPart = remember(baseSelectedPart, weakMeasuresFilter) {
+    val allMeasures = remember(baseSelectedPart) {
+        baseSelectedPart.notes.map { it.measure }.distinct().sorted()
+    }
+    val selectedPart = remember(baseSelectedPart, weakMeasuresFilter, startMeasure, endMeasure) {
         val filter = weakMeasuresFilter
-        if (filter.isNullOrEmpty()) baseSelectedPart
-        else {
+        val rangeFiltered = if (!filter.isNullOrEmpty()) {
+            baseSelectedPart.notes.filter { it.measure in filter }
+        } else {
+            baseSelectedPart.notes.filter { it.measure in startMeasure..endMeasure }
+        }
+        if (rangeFiltered.isEmpty() || (filter.isNullOrEmpty() && startMeasure <= (allMeasures.firstOrNull() ?: 1) && endMeasure >= (allMeasures.lastOrNull() ?: 999))) {
+            baseSelectedPart
+        } else {
             var cursor = 0f
-            val filteredNotes = baseSelectedPart.notes.filter { it.measure in filter }.map { n ->
+            val relaid = rangeFiltered.map { n ->
                 val item = n.copy(startBeat = cursor)
                 cursor += n.durationBeats
                 item
             }
-            baseSelectedPart.copy(name = "${baseSelectedPart.name} (Hatalı Ölçüler)", notes = filteredNotes)
+            val suffix = if (!filter.isNullOrEmpty()) " (Hatalı Ölçüler)" else " (Ö$startMeasure-${endMeasure.coerceAtMost(allMeasures.lastOrNull() ?: endMeasure)})"
+            baseSelectedPart.copy(name = "${baseSelectedPart.name}$suffix", notes = relaid)
         }
     }
 
@@ -260,6 +273,7 @@ fun NotaUyumuStudioApp() {
         pitchHistory.clear()
         currentBeat = -1f
         var recordStartMs = 0L
+        val recentMidis = ArrayDeque<Float>(3)
 
         audioEngine.rmsThreshold = rmsThreshold
         try {
@@ -276,12 +290,24 @@ fun NotaUyumuStudioApp() {
                     ReferenceAudioAnalyzer.getReferenceMidiAtTime(referenceContour, timeSecNow)
                 } else null
 
+                val smoothedMidi = sample.midiFloat?.let { rawM ->
+                    synchronized(recentMidis) {
+                        if (recentMidis.size >= 3) recentMidis.removeFirst()
+                        recentMidis.addLast(rawM)
+                        val sorted = recentMidis.sorted()
+                        sorted[sorted.size / 2]
+                    }
+                } ?: run {
+                    synchronized(recentMidis) { recentMidis.clear() }
+                    null
+                }
+
                 val effectiveTarget = refMidi ?: tMidi?.toFloat()
                 var cents: Float? = null
                 val st = when {
                     activeNote?.isRest == true && refMidi == null -> PitchStatus.REST
-                    sample.midiFloat != null && effectiveTarget != null -> {
-                        cents = (sample.midiFloat - effectiveTarget) * 100f
+                    smoothedMidi != null && effectiveTarget != null -> {
+                        cents = (smoothedMidi - effectiveTarget) * 100f
                         val absC = abs(cents)
                         when {
                             absC <= customToleranceCents -> PitchStatus.HIT
@@ -297,7 +323,7 @@ fun NotaUyumuStudioApp() {
                     beat = beatNow,
                     timeSec = timeSecNow,
                     frequency = sample.frequency,
-                    midiFloat = sample.midiFloat,
+                    midiFloat = smoothedMidi,
                     rms = sample.rms,
                     targetMidi = tMidi,
                     referenceMidi = refMidi,
@@ -648,6 +674,47 @@ fun NotaUyumuStudioApp() {
                 label = { Text("Metronom", fontSize = 11.sp) }
             )
 
+            if (allMeasures.size > 1) {
+                Box {
+                    OutlinedButton(onClick = { measureMenuExpanded = true }) {
+                        val maxM = allMeasures.last()
+                        val lbl = if (startMeasure == 1 && endMeasure >= maxM) "Tüm Ölçüler" else "Ö$startMeasure-${endMeasure.coerceAtMost(maxM)}"
+                        Text(lbl, fontSize = 11.sp)
+                    }
+                    DropdownMenu(expanded = measureMenuExpanded, onDismissRequest = { measureMenuExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Tüm Ölçüler (Baştan Sona)") },
+                            onClick = {
+                                startMeasure = allMeasures.first()
+                                endMeasure = allMeasures.last()
+                                weakMeasuresFilter = null
+                                measureMenuExpanded = false
+                            }
+                        )
+                        allMeasures.forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text("Ölçü $m'den Sona Kadar Çalış") },
+                                onClick = {
+                                    startMeasure = m
+                                    endMeasure = allMeasures.last()
+                                    weakMeasuresFilter = null
+                                    measureMenuExpanded = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Sadece Ölçü $m'yi Tekrarla") },
+                                onClick = {
+                                    startMeasure = m
+                                    endMeasure = m
+                                    weakMeasuresFilter = null
+                                    measureMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             Box {
                 OutlinedButton(onClick = { tolMenuExpanded = true }) {
                     Text(tolerance.label, fontSize = 11.sp)
@@ -879,6 +946,9 @@ fun NotaUyumuStudioApp() {
                     putExtra(Intent.EXTRA_TEXT, shareText)
                 }
                 context.startActivity(Intent.createChooser(intent, "Raporu Paylaş"))
+            },
+            onPlayRecordedVoice = {
+                audioEngine.playRecordedAudio()
             },
             onExportWav = {
                 val safeName = selectedPart.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")
