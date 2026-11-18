@@ -1,10 +1,12 @@
-cat << 'EOF' > .github/workflows/build-apk.yml
-name: Build & Release Signed APK
+name: Build and Release Signed APK
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -27,9 +29,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - run: gradle assembleRelease --no-daemon
+      - name: Assemble Release
+        run: gradle assembleRelease --no-daemon
 
-      - name: Keystore Hazırla ve APK İmzala
+      - name: Keystore Hazirla ve APK Imzala
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -64,22 +67,17 @@ jobs:
             --out "$SIGNED_APK" "$ALIGNED_APK"
           "$BUILD_TOOLS/apksigner" verify "$SIGNED_APK"
 
-      - name: APK Çıktısını Artifacts Olarak Yükle
+      - name: APK Artifacts Yukle
         uses: actions/upload-artifact@v4
         with:
           name: NotaUyumu-signed-apk
           path: NotaUyumu-Studio-signed.apk
 
-      - name: Otomatik GitHub Release Oluştur
+      - name: Otomatik GitHub Release Olustur
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v1.0.{0}', github.run_number) }}
-          name: "NotaUyumu Studio ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v1.0.{0}', github.run_number) }}"
+          tag_name: v1.0.${{ github.run_number }}
+          name: NotaUyumu Studio v1.0.${{ github.run_number }}
           files: NotaUyumu-Studio-signed.apk
           generate_release_notes: true
-EOF
-git add .github/workflows/build-apk.yml
-git commit -m "Otomatik imzali Release APK workflow eklendi"
-git push
-git tag v1.0.0 && git push origin v1.0.0
