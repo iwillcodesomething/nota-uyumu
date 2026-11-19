@@ -84,8 +84,7 @@ class OmrModelTest {
             assertEquals("$name: 4 ses hattı beklenir", 4, s.lines.size)
             val sims = truth.lines.mapIndexed { i, l ->
                 println("  ${l.name}: ${s.lines[i].notes.joinToString(" ") { Pitch.name(it.midi) }}")
-                // Oktav hatası (ör. sekizlik tenor anahtarı) ayrıca raporlanır; karşılaştırma perde sınıfıyla
-                similarity(l.notes.map { Pitch.solfege(it.midi) }, s.lines[i].notes.map { Pitch.solfege(it.midi) })
+                similarity(l.notes.map { Pitch.name(it.midi) }, s.lines[i].notes.map { Pitch.name(it.midi) })
             }
             println("  benzerlik: ${sims.map { "%.2f".format(it) }}")
             assertTrue("$name benzerlik $sims", sims.all { it >= minSim })

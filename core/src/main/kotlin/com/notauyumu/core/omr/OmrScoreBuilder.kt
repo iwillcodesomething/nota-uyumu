@@ -117,6 +117,18 @@ object OmrScoreBuilder {
             }
         }
 
+        // Sekizlik sol anahtarı (tenor) modelce her zaman tanınmaz: koro düzeninde alttaki parti
+        // üsttekinden belirgin biçimde yüksek çıkıyorsa yazılı perdesi bir oktav yukarıdadır.
+        for (pi in 1 until partCount) {
+            val above = partEvents[pi - 1].map { it.second.midi }.sorted()
+            val here = partEvents[pi].map { it.second.midi }.sorted()
+            if (above.isEmpty() || here.isEmpty()) continue
+            val ma = above[above.size / 2]; val mh = here[here.size / 2]
+            if (mh > ma + 2 && mh - 12 <= ma) {
+                partEvents[pi].replaceAll { (q, e) -> q to Ev(e.startQ, e.durQ, e.midi - 12) }
+            }
+        }
+
         var group = 0
         val lines = ArrayList<VoiceLine>()
         fun measureOf(q: Double) = measures.indexOfLast { it.startSec <= q * secPerQ + 1e-6 }.coerceAtLeast(0) + 1

@@ -107,6 +107,17 @@ class OmrLogicTest {
     }
 
     @Test
+    fun builder_fixesUnrecognizedOctaveTrebleClefOfTenor() {
+        fun staff(vararg p: String) = listOf(sym("clef_G2")) + p.map { sym("note_2", it, "_") } + sym("barline")
+        val alto = staff("C5", "B4")
+        val tenorWritten = staff("G5", "G5") // sekizlik anahtar okunmamış: çalan Sol4
+        val bass = listOf(sym("clef_F4"), sym("note_2", "C3", "_"), sym("note_2", "G2", "_"), sym("barline"))
+        val s = OmrScoreBuilder.build("x", listOf(listOf(staff("E5", "D5"), alto, tenorWritten, bass)))
+        assertEquals(listOf(67, 67), s.lines[2].notes.map { it.midi })
+        assertEquals(listOf(48, 43), s.lines[3].notes.map { it.midi })
+    }
+
+    @Test
     fun builder_realHomrOutputForPianoPage() {
         val exp = expected()
         val s = OmrScoreBuilder.build("tabi", listOf(listOf(exp[0]!!, exp[1]!!)))
