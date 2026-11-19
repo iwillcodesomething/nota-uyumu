@@ -2,13 +2,18 @@ name: Test ve APK
 
 on:
   push:
-    branches: [main, v2-sifirdan]
+    branches: [main, pdf-okuma]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  HOMR_URL: https://github.com/liebharc/homr/releases/download/onnx_checkpoints
+  HOMR_ENCODER: encoder_pytorch_model_566-ccd1cb311c368b5711dd238d2464c615397a3f2b
+  HOMR_DECODER: decoder_pytorch_model_566-ccd1cb311c368b5711dd238d2464c615397a3f2b
 
 jobs:
   build:
@@ -22,6 +27,23 @@ jobs:
           distribution: 'temurin'
 
       - uses: gradle/actions/setup-gradle@v4
+
+      - name: homr modellerini önbellekten al
+        id: homr-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/homr/*.onnx
+          key: homr-566-ccd1cb31
+
+      - name: homr modellerini indir ve doğrula (AGPL-3.0, github.com/liebharc/homr)
+        if: steps.homr-cache.outputs.cache-hit != 'true'
+        run: ./scripts/homr_modelleri.sh
+
+      - name: Koro test görsellerini üret (Verovio)
+        run: |
+          pip install --quiet verovio cairosvg
+          python scripts/koro_gorselleri.py "$RUNNER_TEMP/koro"
+          echo "OMR_CHOIR_DIR=$RUNNER_TEMP/koro" >> "$GITHUB_ENV"
 
       - name: Çekirdek testleri
         run: ./gradlew --no-daemon :core:test
@@ -61,19 +83,18 @@ jobs:
         if: env.SIGNED == '1' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.${{ github.run_number }}
-          name: Nota Uyumu 2.0.${{ github.run_number }}
+          tag_name: v2.2.${{ github.run_number }}
+          name: Nota Uyumu 2.2.${{ github.run_number }}
           files: NotaUyumu.apk
           generate_release_notes: true
 
       - name: Ön sürüm (deneme dalı)
-        if: env.SIGNED == '1' && github.ref == 'refs/heads/v2-sifirdan'
+        if: env.SIGNED == '1' && github.ref == 'refs/heads/pdf-okuma'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.0-deneme.${{ github.run_number }}
-          name: Nota Uyumu 2 · deneme ${{ github.run_number }}
+          tag_name: v2.2.0-deneme.${{ github.run_number }}
+          name: Nota Uyumu 2.2 · deneme ${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           prerelease: true
           files: NotaUyumu.apk
-          body: "v2-sifirdan dalından imzalı deneme sürümü. Telefona NotaUyumu.apk dosyasını indirip kurun."
-
+          body: "pdf-okuma dalından imzalı deneme sürümü: PDF ve fotoğraftan nota okuma."
