@@ -150,8 +150,27 @@ object VoiceTracker {
 
     fun split(act: BasicPitch.Activations, voices: Int, tuning: Tuning = Tuning(), time: (Int) -> Double = BasicPitch::frameToTime): List<List<NoteEvent>> {
         val init = track(act, voices, tuning)
-        val out = if (voices >= 2) refine(act, init) else init
+        val out = if (voices >= 2) refine(act, init).takeIf { weakFraction(act, it) <= MAX_WEAK } ?: init else init
         return out.map { toNotes(it, time = time) }
+    }
+
+    /**
+     * İyileştirme, seslerin uzun süre söylediği (ör. "Uu" dolguları) kayıtlarda büyük kazanç sağlar; kısa,
+     * kesik notalı ve bol susmalı eserlerde ise sesleri kayıtta neredeyse duyulmayan perdelere
+     * sürükleyebilir. Atanan perdelerin bu kadarından fazlası zayıf duyuluyorsa kare izleyici kullanılır.
+     */
+    private const val MAX_WEAK = 0.25
+
+    /** Atanan (ses, kare) perdelerinden kayıtta zayıf (< 0.2) duyulanların oranı. */
+    fun weakFraction(act: BasicPitch.Activations, tr: Array<IntArray>): Double {
+        var n = 0; var weak = 0
+        for (v in tr) for (t in v.indices step 2) {
+            val p = v[t]
+            if (p <= 0) continue
+            n++
+            if (act.note[t][p - BasicPitch.MIDI_OFFSET] < 0.2f) weak++
+        }
+        return if (n == 0) 0.0 else weak.toDouble() / n
     }
 
     // ------------------------------------------------------------------ zamansal iyileştirme

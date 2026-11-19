@@ -91,15 +91,21 @@ object StaffFinder {
         // Arka plan: kapanma benzeri — önce yerel en açık değer (max) ile mürekkebi sil, sonra ortala
         val bright = boxMax(img, radius / 3)
         val bg = boxMean(bright, radius)
-        val out = ByteArray(w * h)
+        val v0s = IntArray(w * h)
+        val hist = IntArray(256)
         for (i in 0 until w * h) {
             val g = img.pixels[i].toInt() and 0xFF
             val b = maxOf(1, bg.pixels[i].toInt() and 0xFF)
             val v0 = minOf(255, g * 255 / b)
-            // Kâğıt beyaz kalır, mürekkep biraz koyulaşır (ince çizgiler kaybolmasın)
-            val v = (255 - (255 - v0) * 13 / 10).coerceIn(0, 255)
-            out[i] = v.toByte()
+            v0s[i] = v0; hist[v0]++
         }
+        // Kâğıt beyaz kalır, mürekkep koyulaşır (ince çizgiler kaybolmasın). Soluk fotoğraflarda (gri mürekkep,
+        // bulanık çizgi) kazanç, en koyu %1'lik mürekkep siyaha yakın olacak kadar artırılır.
+        var acc = 0L; var p1 = 0
+        while (p1 < 255 && acc + hist[p1] < (w.toLong() * h) / 100) { acc += hist[p1]; p1++ }
+        val gain = ((255.0 - 40) / maxOf(1, 255 - p1)).coerceIn(1.3, 3.0)
+        val out = ByteArray(w * h)
+        for (i in 0 until w * h) out[i] = (255 - ((255 - v0s[i]) * gain).toInt()).coerceIn(0, 255).toByte()
         return GrayImage(w, h, out)
     }
 
@@ -221,39 +227,53 @@ object StaffFinder {
             val tops = idx.map { found[it]!!.top }.toDoubleArray()
             val bottoms = idx.map { found[it]!!.bottom }.toDoubleArray()
             val unit = idx.map { found[it]!!.unit }.sorted()[idx.size / 2]
-            val st0 = Staff(xs, tops, bottoms, unit, 0, img.width - 1)
-            val (x0, x1) = horizontalExtent(img, st0, centers[ref])
-            val st = Staff(xs, tops, bottoms, unit, x0, x1)
+            val st = traced(img, Staff(xs, tops, bottoms, unit, 0, img.width - 1))
             // Aynı porteyi ikinci kez ekleme (farklı şeritlerden tohumlanmış olabilir)
             if (result.none { o -> abs(o.midY - st.midY) < 2 * unit && o.x0 < st.x1 && st.x0 < o.x1 }) result += st
         }
         return result.sortedBy { it.midY }
     }
 
-    /** Beş çizginin çoğunun koyu olduğu bölgeyi referans şeritten iki yana takip eder. */
-    private fun horizontalExtent(img: GrayImage, s: Staff, startX: Double): Pair<Int, Int> {
-        fun present(x: Int): Boolean {
-            val t = s.top(x.toDouble()); val b = s.bottom(x.toDouble())
-            var hits = 0
+    /**
+     * Beş çizginin çoğunun koyu olduğu bölgeyi ölçülmüş en dış şeritlerden iki yana takip eder.
+     * Kıvrık sayfada çizgiler kenara doğru eğilebilir: yürürken dikey kayma her adımda yeniden
+     * ölçülür ve izlenen noktalar porteye eklenir (sonraki düzleştirme de bu noktaları kullanır).
+     */
+    private fun traced(img: GrayImage, s: Staff): Staff {
+        fun hits(x: Int, off: Double): Int {
+            val t = s.top(x.toDouble()) + off; val b = s.bottom(x.toDouble()) + off
+            var h = 0
             for (k in 0..4) {
                 val ly = t + (b - t) * k / 4
                 var dark = false
-                for (dy in -2..2) { val yy = (ly + dy).roundToInt(); if (yy in 0 until img.height && img[x, yy] < LINE_DARK) { dark = true; break } }
-                if (dark) hits++
+                for (dy in -1..1) { val yy = (ly + dy).roundToInt(); if (yy in 0 until img.height && img[x, yy] < LINE_DARK) { dark = true; break } }
+                if (dark) h++
             }
-            return hits >= 4
+            return h
         }
         val maxGap = (2 * s.unit).toInt().coerceAtLeast(4)
+        val step = 40
+        val extra = ArrayList<Triple<Double, Double, Double>>()
         fun walk(dir: Int): Int {
-            // Ölçüm yapılmış en dış şeritten başla: uzun yürüyüşlerde sapma birikmesin
-            var x = (if (dir < 0) s.xs.first() else s.xs.last()).toInt().coerceIn(0, img.width - 1); var lastGood = x; var gap = 0
+            var x = (if (dir < 0) s.xs.first() else s.xs.last()).toInt().coerceIn(0, img.width - 1)
+            var lastGood = x; var gap = 0; var off = 0.0; var sinceMark = 0
             while (x in 0 until img.width) {
-                if (present(x)) { lastGood = x; gap = 0 } else if (++gap > maxGap) break
+                var best = -1; var bestOff = off
+                for (d in -2..2) { val o = off + d * 0.5; val h = hits(x, o); if (h > best || (h == best && abs(o - off) < abs(bestOff - off))) { best = h; bestOff = o } }
+                if (best >= 4) {
+                    off = bestOff; lastGood = x; gap = 0
+                    if (++sinceMark >= step && abs(off) >= 1.0) {
+                        extra += Triple(x.toDouble(), s.top(x.toDouble()) + off, s.bottom(x.toDouble()) + off); sinceMark = 0
+                    }
+                } else if (++gap > maxGap) break
                 x += dir
             }
             return lastGood
         }
-        return walk(-1) to walk(1)
+        val x0 = walk(-1); val x1 = walk(1)
+        if (extra.isEmpty()) return Staff(s.xs, s.tops, s.bottoms, s.unit, x0, x1)
+        val pts = (s.xs.indices.map { Triple(s.xs[it], s.tops[it], s.bottoms[it]) } + extra).sortedBy { it.first }
+        return Staff(pts.map { it.first }.toDoubleArray(), pts.map { it.second }.toDoubleArray(), pts.map { it.third }.toDoubleArray(), s.unit, x0, x1)
     }
 
     /** İki porte sol kenarlarında dikey çizgiyle bağlıysa aynı sistemdedir. */
@@ -264,7 +284,15 @@ object StaffFinder {
         for (k in 1 until staves.size) {
             if (connected(img, staves[k - 1], staves[k])) out.last() += staves[k] else out += mutableListOf(staves[k])
         }
-        if (out.all { it.size == 1 } && staves.size >= 4) return byGaps(staves) ?: out
+        if (staves.size >= 4) {
+            // Sistem çizgisi her yerde görülemeyebilir (soluk fotoğraf): bağlantıyla bulunan gruplar
+            // tutarsızsa boşluklara göre gruplama denenir
+            val sizes = out.map { it.size }.toSet()
+            if (out.all { it.size == 1 } || sizes.size > 1) {
+                val g = byGaps(staves)
+                if (g != null && (g.map { it.size }.toSet().size < sizes.size || out.all { it.size == 1 })) return g
+            }
+        }
         return out
     }
 
