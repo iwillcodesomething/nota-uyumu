@@ -112,7 +112,7 @@ fun PieceScreen(vm: AppViewModel) {
                     LabeledValue("Ölçüler", if (r.first == 1 && r.last == score.measures.size) "Tümü ($first–$last)" else "$first – $last")
                     RangeSlider(
                         value = r.first.toFloat()..r.last.toFloat(),
-                        onValueChange = { vm.setRange(it.start.roundToInt()..it.endInclusive.roundToInt()) },
+                        onValueChange = { vm.selectRange(it.start.roundToInt()..it.endInclusive.roundToInt()) },
                         valueRange = 1f..score.measures.size.toFloat(),
                         steps = (score.measures.size - 2).coerceAtLeast(0),
                         colors = SliderDefaults.colors(thumbColor = Palette.Amber, activeTrackColor = Palette.Amber, inactiveTrackColor = Palette.Line, activeTickColor = Palette.Ink.copy(alpha = 0.3f), inactiveTickColor = Palette.Line),

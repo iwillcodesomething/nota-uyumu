@@ -123,7 +123,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updatePrefs(p: PracticePrefs) { prefs = p; library.savePrefs(p) }
 
-    fun setRange(r: IntRange) {
+    fun selectRange(r: IntRange) {
         val n = piece?.score?.measures?.size ?: return
         val a = r.first.coerceIn(1, n); val b = r.last.coerceIn(a, n)
         range = a..b
@@ -198,7 +198,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onAppHidden() { if (screen == Screen.Practice) stopSession(abandon = true) }
 
-    fun practiceMeasures(r: IntRange) { setRange(r); screen = Screen.Piece }
+    fun practiceMeasures(r: IntRange) { selectRange(r); screen = Screen.Piece }
 
     private fun stopEngine() { engine?.stop(); engine = null }
 
