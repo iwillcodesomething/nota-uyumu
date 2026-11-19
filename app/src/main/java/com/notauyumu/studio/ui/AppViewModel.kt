@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.notauyumu.core.ArrangementBuilder
+import com.notauyumu.core.BackingTrack
 import com.notauyumu.core.Grade
 import com.notauyumu.core.MixSettings
 import com.notauyumu.core.Note
@@ -42,7 +43,9 @@ enum class Mode { LISTEN, SING }
 /** Çizim için zenginleştirilmiş canlı ölçüm. [shownMidi] oktav katlaması uygulanmış perdedir. */
 data class LiveSample(val timeSec: Double, val shownMidi: Double?, val grade: Grade)
 
-class LoadedPiece(val entry: PieceEntry, val score: Score)
+class LoadedPiece(val entry: PieceEntry, val score: Score) {
+    var backing: BackingTrack? = null
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val library = Library(app)
@@ -67,6 +70,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var newRecord by mutableStateOf(false); private set
 
     private var engine: PracticeEngine? = null
+
+    // --- ses kaydından içe aktarma ---
+    /** Seçilmiş ama türü henüz sorulmamış ses dosyası. */
+    var pendingAudio by mutableStateOf<Uri?>(null)
+    /** İçe aktarma sürüyorsa ilerleme (0..1) ve aşama. */
+    var importProgress by mutableStateOf<Pair<Float, String>?>(null); private set
+
+    fun importRecording(uri: Uri, kind: Library.RecordingKind, voices: Int) {
+        pendingAudio = null
+        if (importProgress != null) return
+        importProgress = 0f to "Başlıyor"
+        viewModelScope.launch {
+            try {
+                val entry = withContext(Dispatchers.Default) {
+                    library.importRecording(uri, kind, voices) { f, label -> viewModelScope.launch(Dispatchers.Main) { importProgress = f to label } }
+                }
+                entries = library.entries()
+                importProgress = null
+                openPiece(entry)
+            } catch (e: ScoreFormatException) {
+                message = e.message
+            } catch (e: Throwable) {
+                message = "Kayıt çözümlenemedi: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                importProgress = null
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- kitaplık
 
@@ -157,8 +188,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             metronome = prefs.metronome,
             countIn = true,
         )
-        val arrangement = ArrangementBuilder.build(scaled, line.id, mix, from, until)
-        val eng = PracticeEngine(arrangement, mix, listenToMic = m == Mode.SING, latencySec = prefs.latencyMs / 1000.0)
+        // Kayıttan çıkarılmış eserde özgün kayıt eşlik eder (yalnızca %100 tempoda; hoparlörde söylerken kapalı)
+        val useBacking = p.score.fromRecording && prefs.tempoPercent == 100 && prefs.backingGain > 0f && !speaker
+        val backing = if (useBacking) (p.backing ?: library.backing(p.entry.id).also { p.backing = it }) else null
+        val finalMix = if (backing != null) mix.copy(backingGain = prefs.backingGain, metronome = false) else mix.copy(metronome = mix.metronome && !p.score.fromRecording)
+        val arrangement = ArrangementBuilder.build(scaled, line.id, finalMix, from, until)
+        val eng = PracticeEngine(arrangement, finalMix, listenToMic = m == Mode.SING, latencySec = prefs.latencyMs / 1000.0, backing = backing, backingFrom = from, backingUntil = until)
         engine = eng
         mode = m
         report = null

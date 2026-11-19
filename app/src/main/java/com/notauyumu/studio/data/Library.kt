@@ -3,9 +3,19 @@ package com.notauyumu.studio.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.notauyumu.core.BackingTrack
+import com.notauyumu.core.Measure
 import com.notauyumu.core.MusicXmlParser
+import com.notauyumu.core.Note
 import com.notauyumu.core.Score
 import com.notauyumu.core.ScoreFormatException
+import com.notauyumu.core.VoiceLine
+import com.notauyumu.core.transcribe.BasicPitch
+import com.notauyumu.core.transcribe.OrtBasicPitchModel
+import com.notauyumu.core.transcribe.VoiceSplitter
+import com.notauyumu.studio.audio.AudioDecoder
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -18,6 +28,7 @@ data class PieceEntry(
     val lineNames: List<String>,
     val addedAt: Long,
     val isDemo: Boolean,
+    val fromRecording: Boolean = false,
 )
 
 /** Kullanıcı ayarları; tüm eserler için ortak. */
@@ -29,6 +40,7 @@ data class PracticePrefs(
     val othersGain: Float = 0.35f,
     val metronome: Boolean = true,
     val latencyMs: Int = 120,
+    val backingGain: Float = 0.7f,
 )
 
 /**
@@ -51,7 +63,7 @@ class Library(private val context: Context) {
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
             val names = o.optJSONArray("lines")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            list += PieceEntry(o.getString("id"), o.getString("title"), o.optString("composer").ifEmpty { null }, names, o.getLong("addedAt"), false)
+            list += PieceEntry(o.getString("id"), o.getString("title"), o.optString("composer").ifEmpty { null }, names, o.getLong("addedAt"), false, o.optBoolean("rec"))
         }
         return list.sortedWith(compareBy<PieceEntry> { it.isDemo }.thenByDescending { it.addedAt })
     }
@@ -59,9 +71,82 @@ class Library(private val context: Context) {
     private fun demoEntry() = PieceEntry(DEMO_ID, "Isınma Korali", "Örnek eser · 4 ses", listOf("Soprano", "Alto", "Tenor", "Bas"), 0, true)
 
     fun load(id: String): Score {
+        if (id != DEMO_ID && File(dir, "$id.json").exists()) return readRecordingScore(JSONObject(File(dir, "$id.json").readText()))
         val bytes = if (id == DEMO_ID) context.assets.open(DEMO_ASSET).use { it.readBytes() }
         else File(dir, id).readBytes()
         return MusicXmlParser.parse(bytes)
+    }
+
+    /** Kayıttan çıkarılmış eserin özgün sesi (eşlik için). Yoksa null. */
+    fun backing(id: String): BackingTrack? {
+        val f = File(dir, "$id.pcm")
+        if (!f.exists()) return null
+        val bytes = f.readBytes()
+        val sb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        return BackingTrack(FloatArray(sb.remaining()) { sb.get() / 32768f }, AudioDecoder.TARGET_RATE)
+    }
+
+    enum class RecordingKind { SINGLE, TUTTI }
+
+    /**
+     * Ses kaydından eser oluşturur: çözme → Basic Pitch → ses ayırma. Tamamen telefonda çalışır.
+     * [progress]: 0..1 ve aşama adı.
+     */
+    fun importRecording(uri: Uri, kind: RecordingKind, voices: Int, progress: (Float, String) -> Unit): PieceEntry {
+        progress(0f, "Kayıt okunuyor")
+        val audio = AudioDecoder.decode(context, uri) { progress(it * 0.2f, "Kayıt okunuyor") }
+        // Sesi normalize et (çok kısık kayıtlar için)
+        val peak = audio.maxOf { kotlin.math.abs(it) }.coerceAtLeast(1e-4f)
+        if (peak < 0.5f) { val g = 0.7f / peak; for (i in audio.indices) audio[i] *= g }
+        val modelBytes = context.assets.open("basic-pitch/nmp.onnx").use { it.readBytes() }
+        val act = OrtBasicPitchModel(modelBytes).use { m ->
+            BasicPitch.run(m, audio) { progress(0.2f + it * 0.7f, "Notalar çıkarılıyor") }
+        }
+        progress(0.92f, "Partiler ayrılıyor")
+        val events = BasicPitch.notes(act, minMidi = VoiceSplitter.VOICE_MIN_MIDI, maxMidi = VoiceSplitter.VOICE_MAX_MIDI)
+        if (events.isEmpty()) throw ScoreFormatException("Kayıtta nota bulunamadı. Daha net ya da daha yüksek sesli bir kayıt deneyin.")
+        val lines = if (kind == RecordingKind.SINGLE) listOf(VoiceSplitter.monophonic(events)) else VoiceSplitter.satb(events, voices)
+        val names = VoiceSplitter.voiceNames(if (kind == RecordingKind.SINGLE) 1 else voices)
+        val title = displayName(uri)?.substringBeforeLast('.') ?: "Ses kaydı"
+        val score = VoiceSplitter.toScore(title, lines, names, audio.size.toDouble() / AudioDecoder.TARGET_RATE)
+        if (score.lines.isEmpty()) throw ScoreFormatException("Kayıttan parti çıkarılamadı.")
+
+        val id = UUID.randomUUID().toString()
+        File(dir, "$id.json").writeText(writeRecordingScore(score).toString())
+        val pcm = ByteBuffer.allocate(audio.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (v in audio) pcm.putShort((v.coerceIn(-1f, 1f) * 32767).toInt().toShort())
+        File(dir, "$id.pcm").writeBytes(pcm.array())
+        val o = JSONObject()
+            .put("id", id).put("title", score.title).put("composer", if (kind == RecordingKind.SINGLE) "Ses kaydı · tek parti" else "Ses kaydı · tutti")
+            .put("lines", JSONArray(score.lines.map { it.name })).put("addedAt", System.currentTimeMillis()).put("rec", true)
+        prefs.edit().putString("pieces", JSONArray(prefs.getString("pieces", "[]")).put(o).toString()).apply()
+        progress(1f, "Hazır")
+        return PieceEntry(id, score.title, o.getString("composer"), score.lines.map { it.name }, o.getLong("addedAt"), false, true)
+    }
+
+    private fun writeRecordingScore(s: Score): JSONObject = JSONObject()
+        .put("title", s.title)
+        .put("measures", JSONArray(s.measures.map { JSONArray(listOf(it.startSec, it.endSec)) }))
+        .put("lines", JSONArray(s.lines.map { l ->
+            JSONObject().put("id", l.id).put("name", l.name)
+                .put("notes", JSONArray(l.notes.map { n -> JSONArray(listOf(n.startSec, n.durationSec, n.midi)) }))
+        }))
+
+    private fun readRecordingScore(o: JSONObject): Score {
+        val ma = o.getJSONArray("measures")
+        val measures = (0 until ma.length()).map { i -> val m = ma.getJSONArray(i); Measure(i + 1, "${i + 1}", m.getDouble(0), m.getDouble(1), emptyList()) }
+        fun measureOf(t: Double) = measures.indexOfLast { it.startSec <= t + 1e-6 }.coerceAtLeast(0) + 1
+        var group = 0
+        val la = o.getJSONArray("lines")
+        val lines = (0 until la.length()).map { i ->
+            val l = la.getJSONObject(i)
+            val na = l.getJSONArray("notes")
+            VoiceLine(l.getString("id"), l.getString("name"), l.getString("name"), (0 until na.length()).map { k ->
+                val n = na.getJSONArray(k)
+                Note(n.getInt(2), n.getDouble(0), n.getDouble(1), measureOf(n.getDouble(0)), null, ++group)
+            })
+        }
+        return Score(o.getString("title"), "Ses kaydından", lines, measures, 0.0, fromRecording = true)
     }
 
     /** Dosyayı okur, doğrular ve kitaplığa ekler. Geçersizse [ScoreFormatException] fırlatır. */
@@ -88,7 +173,7 @@ class Library(private val context: Context) {
         val arr = JSONArray(prefs.getString("pieces", "[]"))
         val out = JSONArray()
         for (i in 0 until arr.length()) if (arr.getJSONObject(i).getString("id") != id) out.put(arr.getJSONObject(i))
-        File(dir, id).delete()
+        File(dir, id).delete(); File(dir, "$id.json").delete(); File(dir, "$id.pcm").delete()
         val best = JSONObject(prefs.getString("best", "{}"))
         best.keys().asSequence().toList().filter { it.startsWith("$id|") }.forEach { best.remove(it) }
         prefs.edit().putString("pieces", out.toString()).putString("best", best.toString()).apply()
@@ -123,13 +208,14 @@ class Library(private val context: Context) {
             othersGain = prefs.getFloat("others", d.othersGain),
             metronome = prefs.getBoolean("metronome", d.metronome),
             latencyMs = prefs.getInt("latency", d.latencyMs),
+            backingGain = prefs.getFloat("backing", d.backingGain),
         )
     }
 
     fun savePrefs(p: PracticePrefs) {
         prefs.edit().putInt("tempo", p.tempoPercent).putInt("tolerance", p.toleranceCents)
             .putBoolean("octave", p.forgiveOctave).putFloat("own", p.ownGain).putFloat("others", p.othersGain)
-            .putBoolean("metronome", p.metronome).putInt("latency", p.latencyMs).apply()
+            .putBoolean("metronome", p.metronome).putInt("latency", p.latencyMs).putFloat("backing", p.backingGain).apply()
     }
 
     private fun displayName(uri: Uri): String? = runCatching {

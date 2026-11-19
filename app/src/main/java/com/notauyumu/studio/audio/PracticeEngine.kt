@@ -8,6 +8,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Process
 import com.notauyumu.core.Arrangement
+import com.notauyumu.core.BackingTrack
 import com.notauyumu.core.MedianSmoother
 import com.notauyumu.core.MixSettings
 import com.notauyumu.core.Pitch
@@ -28,6 +29,9 @@ class PracticeEngine(
     private val listenToMic: Boolean,
     /** Mikrofon + çıkış gecikmesi telafisi. */
     private val latencySec: Double,
+    private val backing: BackingTrack? = null,
+    private val backingFrom: Double = 0.0,
+    private val backingUntil: Double = Double.MAX_VALUE,
 ) {
     companion object {
         const val OUT_RATE = 44100
@@ -89,7 +93,7 @@ class PracticeEngine(
 
     private fun playLoop(t: AudioTrack) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val renderer = SynthRenderer(OUT_RATE, arrangement, mix)
+        val renderer = SynthRenderer(OUT_RATE, arrangement, mix, backing, backingFrom, backingUntil)
         val buf = FloatArray(1024)
         var more = true
         try {
