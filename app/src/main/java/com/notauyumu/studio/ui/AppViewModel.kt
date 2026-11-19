@@ -23,6 +23,7 @@ import com.notauyumu.core.ScoringSettings
 import com.notauyumu.core.VoiceLine
 import com.notauyumu.studio.audio.PracticeEngine
 import com.notauyumu.studio.data.Library
+import com.notauyumu.studio.data.PageLoader
 import com.notauyumu.studio.data.PieceEntry
 import com.notauyumu.studio.data.PracticePrefs
 import kotlinx.coroutines.Dispatchers
@@ -77,7 +78,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** İçe aktarma sürüyorsa ilerleme (0..1) ve aşama. */
     var importProgress by mutableStateOf<Pair<Float, String>?>(null); private set
 
+    /** İçe aktarma penceresinin başlığı. */
+    var importTitle by mutableStateOf("Kayıt çözümleniyor"); private set
+
+    /** PDF ya da fotoğraf(lar)dan nota okur; tamamen telefonda. */
+    fun importScanned(uris: List<Uri>, kind: PageLoader.Kind = PageLoader.Kind.IMAGE) {
+        if (uris.isEmpty() || importProgress != null) return
+        importTitle = "Nota okunuyor"
+        importProgress = 0f to "Sayfalar açılıyor"
+        viewModelScope.launch {
+            try {
+                val ctx = getApplication<Application>()
+                val entry = withContext(Dispatchers.Default) {
+                    val report: (Float, String) -> Unit = { f, label -> viewModelScope.launch(Dispatchers.Main) { importProgress = f to label } }
+                    val pages = if (kind == PageLoader.Kind.PDF) PageLoader.pdfPages(ctx, uris.first()) { report(it * 0.05f, "PDF sayfaları açılıyor") }
+                    else uris.mapIndexed { i, u -> report(0.05f * i / uris.size, "Fotoğraf ${i + 1} açılıyor"); PageLoader.image(ctx, u) }
+                    val title = library.displayNameOf(uris.first())?.substringBeforeLast('.')?.takeIf { kind == PageLoader.Kind.PDF } ?: "Fotoğraftan okunan nota"
+                    library.importScanned(title, pages) { f, label -> report(0.05f + f * 0.95f, label) }
+                }
+                entries = library.entries()
+                importProgress = null
+                openPiece(entry)
+            } catch (e: ScoreFormatException) {
+                message = e.message
+            } catch (e: OutOfMemoryError) {
+                message = "Telefonun belleği yetmedi. Daha az sayfayla deneyin."
+            } catch (e: Throwable) {
+                message = "Nota okunamadı: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                importProgress = null
+            }
+        }
+    }
+
     fun importRecording(uri: Uri, kind: Library.RecordingKind, voices: Int) {
+        importTitle = "Kayıt çözümleniyor"
         pendingAudio = null
         if (importProgress != null) return
         importProgress = 0f to "Başlıyor"
@@ -102,7 +137,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------- kitaplık
 
     fun import(uri: Uri) {
-        if (busy) return
+        if (busy || importProgress != null) return
+        val kind = runCatching { PageLoader.kindOf(getApplication(), uri) }.getOrDefault(PageLoader.Kind.MUSICXML)
+        if (kind != PageLoader.Kind.MUSICXML) { importScanned(listOf(uri), kind); return }
         busy = true
         viewModelScope.launch {
             try {

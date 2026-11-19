@@ -14,8 +14,8 @@ android {
         applicationId = "com.notauyumu.studio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 210
-        versionName = "2.1.0"
+        versionCode = 220
+        versionName = "2.2.0"
         // Yalnızca telefon işlemcileri (ONNX Runtime yerel kitaplıkları APK boyutunu büyütür)
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
@@ -74,4 +74,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }
