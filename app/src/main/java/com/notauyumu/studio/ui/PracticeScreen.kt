@@ -72,7 +72,11 @@ fun PracticeScreen(vm: AppViewModel) {
             Column(Modifier.weight(1f)) {
                 Text(s.line.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (vm.mode == Mode.SING) "Söylüyorsun · ♩ = ${s.score.tempoBpm.roundToInt()}" else "Dinliyorsun · ♩ = ${s.score.tempoBpm.roundToInt()}",
+                    when {
+                        vm.mode != Mode.SING -> "Dinliyorsun · ♩ = ${s.score.tempoBpm.roundToInt()}"
+                        s.speakerMode -> "Hoparlör: kendi partin kapalı · kulaklık takarsan eşlik eder"
+                        else -> "Söylüyorsun · ♩ = ${s.score.tempoBpm.roundToInt()}"
+                    },
                     style = MaterialTheme.typography.labelMedium, color = Palette.Muted,
                 )
             }

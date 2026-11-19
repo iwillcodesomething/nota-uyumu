@@ -122,6 +122,9 @@ class AudioCoreTest {
         val arr = ArrangementBuilder.build(score, "x", mix, 0.0, score.durationSec)
         assertEquals(2.0, arr.countInSec, 1e-9) // 2 vuruşluk ölçü
         assertEquals(-2.0, arr.scoreOffsetSec, 1e-9)
+        val cue = arr.events.single { it.kind == SoundKind.CUE }
+        assertEquals("ön sayımda başlangıç notası", 60, cue.midi)
+        assertEquals(0.0, cue.startSec, 1e-9)
         val r = SynthRenderer(sr, arr, mix)
         val buf = FloatArray(512)
         var peak = 0f; var frames = 0; var energyAfterCountIn = 0.0

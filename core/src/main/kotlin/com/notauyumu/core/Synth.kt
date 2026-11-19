@@ -5,7 +5,7 @@ import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.math.tanh
 
-enum class SoundKind { OWN, OTHER, CLICK_STRONG, CLICK_WEAK }
+enum class SoundKind { OWN, OTHER, CUE, CLICK_STRONG, CLICK_WEAK }
 
 data class SynthEvent(val startSec: Double, val durSec: Double, val midi: Int, val kind: SoundKind)
 
@@ -22,6 +22,8 @@ data class MixSettings(
     val othersGain: Float = 0.35f,
     val metronome: Boolean = true,
     val countIn: Boolean = true,
+    /** Ön sayım boyunca kendi partinin ilk notasını çal (kendi partin kısık/kapalıyken başlangıç perdesi için). */
+    val startingPitch: Boolean = true,
 )
 
 object ArrangementBuilder {
@@ -36,6 +38,11 @@ object ArrangementBuilder {
         val ev = ArrayList<SynthEvent>()
         if (mix.countIn) for (i in 0 until beatsInBar) {
             ev += SynthEvent(i * beatLen, 0.05, 0, if (i == 0) SoundKind.CLICK_STRONG else SoundKind.CLICK_WEAK)
+        }
+        if (mix.countIn && mix.startingPitch && countIn > 0) {
+            score.lines.firstOrNull { it.id == lineId }?.notes?.firstOrNull { it.endSec > fromSec + 1e-6 && it.startSec < untilSec }?.let { first ->
+                ev += SynthEvent(0.0, countIn * 0.85, first.midi, SoundKind.CUE)
+            }
         }
         for (line in score.lines) {
             val own = line.id == lineId
@@ -90,6 +97,7 @@ class SynthRenderer(private val sampleRate: Int, private val arrangement: Arrang
             val (freq, gain) = when (e.kind) {
                 SoundKind.OWN -> Pitch.midiToFreq(e.midi.toDouble()) to mix.ownGain * 0.22f
                 SoundKind.OTHER -> Pitch.midiToFreq(e.midi.toDouble()) to mix.othersGain * 0.16f
+                SoundKind.CUE -> Pitch.midiToFreq(e.midi.toDouble()) to 0.16f
                 SoundKind.CLICK_STRONG -> 1760.0 to 0.35f
                 SoundKind.CLICK_WEAK -> 1175.0 to 0.22f
             }

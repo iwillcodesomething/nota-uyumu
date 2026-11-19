@@ -148,14 +148,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val sLine = scaled.lines.first { it.id == line.id }
         val from = scaled.measures[range.first - 1].startSec
         val until = scaled.measures[range.last - 1].endSec
-        val mix = MixSettings(ownGain = if (m == Mode.LISTEN) maxOf(prefs.ownGain, 0.6f) else prefs.ownGain, othersGain = prefs.othersGain, metronome = prefs.metronome, countIn = true)
+        // Hoparlörden çalarken mikrofon kendi partini duyup "doğru söylüyorsun" sanmasın: kendi partin kapanır,
+        // ön sayımda yalnızca başlangıç notası verilir. Kulaklıkta tam eşlik.
+        val speaker = m == Mode.SING && !headphonesConnected()
+        val mix = MixSettings(
+            ownGain = when { m == Mode.LISTEN -> maxOf(prefs.ownGain, 0.6f); speaker -> 0f; else -> prefs.ownGain },
+            othersGain = if (speaker) prefs.othersGain * 0.6f else prefs.othersGain,
+            metronome = prefs.metronome,
+            countIn = true,
+        )
         val arrangement = ArrangementBuilder.build(scaled, line.id, mix, from, until)
         val eng = PracticeEngine(arrangement, mix, listenToMic = m == Mode.SING, latencySec = prefs.latencyMs / 1000.0)
         engine = eng
         mode = m
         report = null
         newRecord = false
-        session = SessionView(scaled, sLine, from, until, arrangement.countInSec, ScoringSettings(prefs.toleranceCents.toDouble(), prefs.forgiveOctave))
+        session = SessionView(scaled, sLine, from, until, arrangement.countInSec, ScoringSettings(prefs.toleranceCents.toDouble(), prefs.forgiveOctave), speaker)
         screen = Screen.Practice
         eng.start()
     }
@@ -200,6 +208,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun practiceMeasures(r: IntRange) { selectRange(r); screen = Screen.Piece }
 
+    private fun headphonesConnected(): Boolean {
+        val am = getApplication<Application>().getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val types = mutableSetOf(
+            android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+        )
+        if (android.os.Build.VERSION.SDK_INT >= 31) types += android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+        return am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS).any { it.type in types }
+    }
+
     private fun stopEngine() { engine?.stop(); engine = null }
 
     override fun onCleared() { stopEngine() }
@@ -213,6 +231,8 @@ class SessionView(
     val until: Double,
     val countIn: Double,
     val settings: ScoringSettings,
+    /** Kulaklık yok: kendi partin çalınmıyor. */
+    val speakerMode: Boolean = false,
 ) {
     var now: Double = from - countIn
     val raw = ArrayList<PitchSample>()
