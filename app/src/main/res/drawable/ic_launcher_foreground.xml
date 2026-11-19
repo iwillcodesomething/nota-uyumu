@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Hedef perde çizgileri -->
+    <path android:strokeColor="#33F2B544" android:strokeWidth="1.5" android:pathData="M30,44 L78,44 M30,54 L78,54 M30,64 L78,64" />
+    <!-- Söylenen ses dalgası -->
+    <path android:strokeColor="#FF4FC3A1" android:strokeWidth="3.2" android:strokeLineCap="round" android:fillColor="#00000000"
+        android:pathData="M30,64 C36,64 38,54 44,54 C50,54 50,44 56,44 C62,44 64,44 70,44" />
+    <!-- Nota -->
+    <path android:fillColor="#FFF2B544" android:pathData="M68,30 L71,30 L71,62 L68,62 Z" />
+    <path android:fillColor="#FFF2B544" android:pathData="M57,62 a7,5.5 0 1,0 14,0 a7,5.5 0 1,0 -14,0 Z" />
+    <path android:fillColor="#FFF2B544" android:pathData="M71,30 C77,32 81,36 81,42 C79,38 75,37 71,37 Z" />
+</vector>

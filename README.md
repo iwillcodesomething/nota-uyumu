@@ -1,18 +1,35 @@
-# NotaUyumu Studio (Native Android — Kotlin & Jetpack Compose)
+# Nota Uyumu 2
 
-Çok partili PDF veya MusicXML (`.xml` / `.mxl`) notalarından istediğiniz partiyi seçip, gerçek zamanlı mikrofon girişiyle (**YIN Pitch Detection** + `AudioRecord`) entonasyonunuzu kıyaslayan, 60 FPS Piano Roll ve performans sonu doğruluk raporu sunan **%100 native Android** uygulamasıdır.
+Koristler için parti çalışma uygulaması (Android). MusicXML notasını aç, partini seç, söyle; uygulama perdeni anında gösterir ve sonunda hangi ölçülerde zorlandığını söyler.
 
-## Özellikler
-- **API'siz Yerel PDF OMR:** Android `PdfRenderer` + piksel tabanlı yatay izdüşüm ve eliptik nota başı tanıma algoritması ile PDF notalarını internet veya harici API olmadan partilere ayırır.
-- **MusicXML Desteği:** `.xml` ve `.mxl` çok kanallı nota dosyalarını doğrudan okur.
-- **Gerçek Zamanlı Ses Motoru:** `AudioRecord` (44.1 kHz PCM) + saf Kotlin YIN algoritması + ayarlanabilir RMS Noise Gate.
-- **Referans Sentezleyici & Metronom:** `AudioTrack` ile ilk nota / tüm parti ön dinleme ve 4 vuruşluk geri sayım.
-- **60 FPS Compose Piano Roll:** Yeşil/Sarı/Kırmızı anlık cent geri bildirimi ve canlı frekans HUD'ı.
+Bu sürüm sıfırdan yazıldı. Önceki sürümün fikri korundu; kod, arayüz ve ses motoru yeniden tasarlandı.
 
-## GitHub Actions ile Otomatik APK Derleme
-Bu repoyu GitHub'a yüklediğinizde `.github/workflows/build-apk.yml` iş akışı otomatik çalışır ve **Actions > Build Android APK > Artifacts** altından `NotaUyumu-debug.apk` dosyasını doğrudan indirebilirsiniz.
+## Ne yapar?
 
-## Android Studio ile Yerel Derleme
-1. Projeyi Android Studio (Ladybug veya üzeri) ile açın.
-2. Gradle senkronizasyonunun tamamlanmasını bekleyin.
-3. **Build > Build Bundle(s) / APK(s) > Build APK(s)** menüsünden APK çıktısı alın veya doğrudan Android cihazınızda çalıştırın.
+- **Nota açma:** `.musicxml`, `.xml` ve sıkıştırılmış `.mxl`. Dosya yöneticisinden veya WhatsApp'tan "Birlikte aç" ile de açılabilir.
+- **Parti ayrımı:** Ayrı partiler (S/A/T/B) ve tek portede iki ses (ör. "Kadınlar · üst ses / alt ses") ayrı ayrı seçilebilir. Sekizlik tenor anahtarı, bağlar, akorlar, şarkı sözleri, anakruz ve tempo değişimleri doğru okunur.
+- **Dinle:** Kendi partin öne çıkar, diğer partiler kısık çalar; ses düzeyleri ayarlanabilir.
+- **Söyle:** Kayan nota şeridinde hedef notalar ve senin perde çizgin yan yana görünür (yeşil: doğru, sarı: yakın, kırmızı: uzak). Alttaki gösterge kaç cent pes/tiz olduğunu söyler.
+- **Değerlendirme:** Genel yüzde, ölçü ölçü sonuç, genel pes/tiz eğilimi; zorlandığın ölçüleri tek dokunuşla döngüye alma; parti başına en iyi skor.
+- **Çalışma ayarları:** Tempo (%40–130), ölçü aralığı, tolerans (Rahat ±50¢ / Normal ±35¢ / Titiz ±20¢), metronom, oktav farkını yoksayma, gecikme telafisi.
+- **Örnek eser:** Uygulamayla gelen 4 sesli "Isınma Korali".
+
+PDF notalar bilerek desteklenmiyor: resimden nota okumak güvenilir sonuç vermiyor. MuseScore'da `Dosya → Dışa aktar → MusicXML` ile dosya üretilebilir.
+
+## Yapı
+
+| Modül | İçerik |
+| --- | --- |
+| `core/` | Saf Kotlin, Android'e bağımlı değil: MusicXML okuyucu, YIN perde algılama, puanlama, sentezleyici. Birim testleri burada. |
+| `app/` | Android: ses motoru (`AudioTrack` + `AudioRecord`), Jetpack Compose arayüzü, eser kitaplığı. |
+
+Ses ve görüntü aynı saatten beslenir (AudioTrack oynatma kafası); mikrofon ölçümleri bu saate göre zaman damgası alır.
+
+## Derleme
+
+```sh
+./gradlew :core:test          # çekirdek testleri
+./gradlew :app:assembleDebug  # app/build/outputs/apk/debug/app-debug.apk
+```
+
+GitHub Actions her gönderimde testleri çalıştırır ve APK'yı **Actions → ilgili çalışma → Artifacts → NotaUyumu-apk** altına koyar. `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD` gizli anahtarları tanımlıysa imzalı release APK da üretilir; `main` dalında GitHub sürümü olarak yayımlanır.
