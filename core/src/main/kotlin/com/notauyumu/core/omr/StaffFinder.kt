@@ -169,7 +169,8 @@ object StaffFinder {
             var dark = 0
             val row = y * img.width
             for (x in sx0 until sx1) if ((img.pixels[row + x].toInt() and 0xFF) < LINE_DARK) dark++
-            lineRows[y] = dark >= 0.55 * w
+            // Porte çizgisi şeridin tamamını kaplar; yardımcı (ledger) çizgiler kısadır
+            lineRows[y] = dark >= 0.75 * w
         }
         val lines = ArrayList<Double>()
         var y = 0
@@ -190,32 +191,41 @@ object StaffFinder {
         val sw = img.width / strips
         val perStrip = (0 until strips).map { k -> stavesInStrip(img, k * sw, (k + 1) * sw) }
         val centers = DoubleArray(strips) { k -> k * sw + sw / 2.0 }
-        // Referans: en çok porte bulunan, ortaya yakın şerit
-        val ref = (0 until strips).maxWithOrNull(compareBy<Int> { perStrip[it].size }.thenBy { -abs(it - strips / 2) }) ?: return emptyList()
+        // Her şerit tohum olabilir (kısa son sistemler ve bazı şeritlerde kaçan porteler için);
+        // en çok porte bulunan ve ortaya yakın şeritlerden başlanır.
+        val order = (0 until strips).sortedWith(compareByDescending<Int> { perStrip[it].size }.thenBy { abs(it - strips / 2) })
+        val used = HashSet<Pair<Int, Int>>()
         val result = ArrayList<Staff>()
-        for (seed in perStrip[ref]) {
+        for (ref in order) for ((si, seed) in perStrip[ref].withIndex()) {
+            if ((ref to si) in used) continue
             val found = arrayOfNulls<StripStaff>(strips)
-            found[ref] = seed
+            val foundIdx = IntArray(strips) { -1 }
+            found[ref] = seed; foundIdx[ref] = si
             for (dir in listOf(-1, 1)) {
                 var last = seed
                 var k = ref + dir
                 var misses = 0
                 while (k in 0 until strips && misses < 4) {
-                    val cand = perStrip[k].minByOrNull { abs(it.mid - last.mid) }
+                    val ci = perStrip[k].indices.filter { (k to it) !in used }.minByOrNull { abs(perStrip[k][it].mid - last.mid) }
+                    val cand = ci?.let { perStrip[k][it] }
                     if (cand != null && abs(cand.mid - last.mid) < 2.5 * seed.unit && abs(cand.unit - last.unit) < 0.3 * seed.unit) {
-                        found[k] = cand; last = cand; misses = 0
+                        found[k] = cand; foundIdx[k] = ci; last = cand; misses = 0
                     } else misses++
                     k += dir
                 }
             }
             val idx = (0 until strips).filter { found[it] != null }
+            if (idx.size < 2) continue
+            idx.forEach { used += it to foundIdx[it] }
             val xs = idx.map { centers[it] }.toDoubleArray()
             val tops = idx.map { found[it]!!.top }.toDoubleArray()
             val bottoms = idx.map { found[it]!!.bottom }.toDoubleArray()
             val unit = idx.map { found[it]!!.unit }.sorted()[idx.size / 2]
             val st0 = Staff(xs, tops, bottoms, unit, 0, img.width - 1)
             val (x0, x1) = horizontalExtent(img, st0, centers[ref])
-            result += Staff(xs, tops, bottoms, unit, x0, x1)
+            val st = Staff(xs, tops, bottoms, unit, x0, x1)
+            // Aynı porteyi ikinci kez ekleme (farklı şeritlerden tohumlanmış olabilir)
+            if (result.none { o -> abs(o.midY - st.midY) < 2 * unit && o.x0 < st.x1 && st.x0 < o.x1 }) result += st
         }
         return result.sortedBy { it.midY }
     }
