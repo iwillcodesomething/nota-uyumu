@@ -14,7 +14,12 @@ Bu sürüm sıfırdan yazıldı. Önceki sürümün fikri korundu; kod, arayüz 
 - **Çalışma ayarları:** Tempo (%40–130), ölçü aralığı, tolerans (Rahat ±50¢ / Normal ±35¢ / Titiz ±20¢), metronom, oktav farkını yoksayma, gecikme telafisi.
 - **Örnek eser:** Uygulamayla gelen 4 sesli "Isınma Korali".
 
-PDF notalar bilerek desteklenmiyor: resimden nota okumak güvenilir sonuç vermiyor. MuseScore'da `Dosya → Dışa aktar → MusicXML` ile dosya üretilebilir.
+- **PDF ve fotoğraftan nota okuma:** homr'un nota okuma modeli telefonda çalışır (internet gerekmez). Telefonla çekilmiş fotoğraflarda ışık dengelenir, eğiklik düzeltilir ve kıvrık porteler düzleştirilir. Şarkı sözleri ve tempo okunmaz; elle yazılmış notalar desteklenmez.
+- **Ses kaydından parti çıkarma:** Spotify'ın Basic Pitch modeliyle tek parti ya da tutti (2–4 ses) kayıtları notaya çevrilir.
+
+## Lisans
+
+GNU AGPL-3.0 (bkz. `LICENSE`, `THIRD_PARTY_NOTICES.md`). Nota okuma modelleri depoya eklenmez; derlemeden önce `./scripts/homr_modelleri.sh` çalıştırılmalıdır (CI bunu otomatik yapar).
 
 ## Yapı
 

@@ -254,7 +254,28 @@ object StaffFinder {
         for (k in 1 until staves.size) {
             if (connected(img, staves[k - 1], staves[k])) out.last() += staves[k] else out += mutableListOf(staves[k])
         }
+        if (out.all { it.size == 1 } && staves.size >= 4) return byGaps(staves) ?: out
         return out
+    }
+
+    /**
+     * Yedek yöntem: sistem çizgisi görülemezse porteler arası boşluklara bakılır. Sistem
+     * içindeki boşluklar sistemler arasındakilerden belirgin biçimde küçüktür.
+     */
+    private fun byGaps(staves: List<Staff>): List<List<Staff>>? {
+        val gaps = (1 until staves.size).map { k ->
+            val x = (staves[k].x0 + staves[k].x1) / 2.0
+            (staves[k].top(x) - staves[k - 1].bottom(x)) / staves[k].unit
+        }
+        val small = gaps.min(); val large = gaps.max()
+        if (large < small * 1.4 || large - small < 2.0) return null
+        val threshold = (small + large) / 2
+        val out = ArrayList<MutableList<Staff>>()
+        out += mutableListOf(staves[0])
+        for (k in 1 until staves.size) if (gaps[k - 1] < threshold) out.last() += staves[k] else out += mutableListOf(staves[k])
+        // Tutarlılık: sistemlerin çoğu aynı sayıda porte içermeli
+        val common = out.groupingBy { it.size }.eachCount().maxBy { it.value }
+        return if (common.key >= 2 && common.value * 2 >= out.size) out else null
     }
 
     private fun connected(img: GrayImage, a: Staff, b: Staff): Boolean {

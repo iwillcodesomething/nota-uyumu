@@ -25,6 +25,8 @@ import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -63,8 +65,24 @@ fun LibraryScreen(vm: AppViewModel) {
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.pendingAudio = uri
     }
+    val context = LocalContext.current
+    var photoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val u = photoUri
+        if (ok && u != null) vm.importScanned(listOf(u))
+    }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
+        if (uris.isNotEmpty()) vm.importScanned(uris)
+    }
+    fun takePhoto() {
+        val dir = java.io.File(context.cacheDir, "photos").apply { mkdirs() }
+        val f = java.io.File(dir, "sayfa-${System.currentTimeMillis()}.jpg")
+        val u = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", f)
+        photoUri = u
+        camera.launch(u)
+    }
     vm.pendingAudio?.let { uri -> RecordingKindDialog(onDismiss = { vm.pendingAudio = null }) { kind, voices -> vm.importRecording(uri, kind, voices) } }
-    vm.importProgress?.let { (f, label) -> ImportProgressDialog(f, label) }
+    vm.importProgress?.let { (f, label) -> ImportProgressDialog(vm.importTitle, f, label) }
     var showCredits by remember { mutableStateOf(false) }
     if (showCredits) CreditsDialog { showCredits = false }
     LazyColumn(
@@ -88,7 +106,17 @@ fun LibraryScreen(vm: AppViewModel) {
             ) {
                 Icon(Icons.Outlined.FileOpen, null)
                 Spacer(Modifier.width(10.dp))
-                Text("Nota dosyası aç  ·  MusicXML", style = MaterialTheme.typography.labelLarge)
+                Text("Nota aç  ·  PDF ya da MusicXML", style = MaterialTheme.typography.labelLarge)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = { takePhoto() }, modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(16.dp)) {
+                    Icon(Icons.Outlined.PhotoCamera, null); Spacer(Modifier.width(8.dp)); Text("Fotoğraf çek")
+                }
+                OutlinedButton(
+                    onClick = { gallery.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(16.dp),
+                ) { Icon(Icons.Outlined.PhotoLibrary, null); Spacer(Modifier.width(8.dp)); Text("Galeriden") }
             }
             Spacer(Modifier.height(10.dp))
             OutlinedButton(
@@ -109,7 +137,7 @@ fun LibraryScreen(vm: AppViewModel) {
             HelpCard()
             Spacer(Modifier.height(12.dp))
             Text(
-                "Ses kaydı çözümleme: Basic Pitch © Spotify AB · Apache-2.0  ·  Lisanslar",
+                "Nota okuma: homr (AGPL-3.0) · Ses çözümleme: Basic Pitch © Spotify (Apache-2.0)  ·  Lisanslar ve kaynak kodu",
                 style = MaterialTheme.typography.labelMedium, color = Palette.Muted,
                 modifier = Modifier.clickable { showCredits = true }.padding(vertical = 8.dp),
             )
@@ -151,13 +179,13 @@ private fun HelpCard() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Lightbulb, null, tint = Palette.Amber, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Nota dosyası nereden bulunur?", style = MaterialTheme.typography.titleMedium)
+            Text("Hangi notalar okunur?", style = MaterialTheme.typography.titleMedium)
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "Koro şefinden ya da MuseScore'dan eserin MusicXML (.mxl, .musicxml) hâlini isteyin. " +
-                "MuseScore'da: Dosya → Dışa aktar → MusicXML. musescore.com'daki birçok koro eseri bu biçimde indirilebilir.\n\n" +
-                "PDF notalar desteklenmez; resimden nota okumak güvenilir sonuç vermiyor.",
+            "• PDF nota (yayınevi ya da MuseScore çıktısı) ve MusicXML dosyaları.\n" +
+                "• Notanın fotoğrafı: sayfayı düz bir yere koyun, gölge düşürmeden ve tamamı görünecek şekilde yukarıdan çekin.\n" +
+                "• Okuma tamamen telefonda yapılır. Elle yazılmış notalar ve çok kıvrık sayfalar hatalı okunabilir; şarkı sözleri okunmaz.",
             style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
         )
     }
@@ -210,16 +238,16 @@ private fun ChoiceRow(title: String, body: String, selected: Boolean, onClick: (
 }
 
 @Composable
-private fun ImportProgressDialog(fraction: Float, label: String) {
+private fun ImportProgressDialog(title: String, fraction: Float, label: String) {
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text("Kayıt çözümleniyor") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("$label…  %${(fraction * 100).toInt()}", style = MaterialTheme.typography.bodyLarge)
                 LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth(), color = Palette.Amber, trackColor = Palette.Line, drawStopIndicator = {})
-                Text("Uzun kayıtlarda bir iki dakika sürebilir.", style = MaterialTheme.typography.labelMedium, color = Palette.Muted)
+                Text("Uzun kayıtlarda ve çok sayfalı notalarda birkaç dakika sürebilir. İnternet gerekmez.", style = MaterialTheme.typography.labelMedium, color = Palette.Muted)
             }
         },
         confirmButton = {},
@@ -232,7 +260,9 @@ private fun CreditsDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val text = remember {
         runCatching {
-            "Basic Pitch — Spotify AB (Apache License 2.0)\nhttps://github.com/spotify/basic-pitch\n\n" +
+            "Nota Uyumu GNU AGPL-3.0 ile lisanslıdır. Kaynak kodu: https://github.com/iwillcodesomething/nota-uyumu\n\n" +
+                "Nota okuma: homr — AGPL-3.0, https://github.com/liebharc/homr (model ağırlıkları DeepScoresV2, OpenScore Lieder, GrandStaff ve PDMX verileriyle eğitilmiştir)\n\n" +
+                "Basic Pitch — Spotify AB (Apache License 2.0)\nhttps://github.com/spotify/basic-pitch\n\n" +
                 context.assets.open("basic-pitch/NOTICE.txt").bufferedReader().readText() +
                 "\n\nONNX Runtime — Microsoft (MIT License)\n\n" +
                 context.assets.open("basic-pitch/LICENSE.txt").bufferedReader().readText()

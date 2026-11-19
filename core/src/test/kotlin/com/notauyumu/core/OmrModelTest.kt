@@ -66,6 +66,11 @@ class OmrModelTest {
     private fun checkChoir(name: String, minSim: Double) {
         val img = choir(name) ?: run { println("$name.png yok, atlandı"); return }
         val truth = demo()
+        run {
+            val page = StaffFinder.preparePage(loadGray(img))
+            val st = StaffFinder.find(page)
+            println("Koro ($name) porteler: " + st.joinToString { "y=%.0f u=%.1f x=%d-%d".format(it.midY, it.unit, it.x0, it.x1) } + "  sistemler=" + StaffFinder.systems(page, st).map { it.size })
+        }
         model().use { m ->
             val s = OmrPipeline.read(name, listOf(loadGray(img)), OmrPipeline.Reader { m.read(it) })
             println("Koro ($name): ${s.measures.size} ölçü, ${s.lines.map { it.name }}")

@@ -13,6 +13,7 @@ import com.notauyumu.core.VoiceLine
  */
 object OmrScoreBuilder {
     const val DEFAULT_BPM = 90.0
+    const val SOURCE_LABEL = "PDF / fotoğraftan okundu"
 
     private class Ev(val startQ: Double, val durQ: Double, val midi: Int)
     private class StaffMeasure(val events: MutableList<Ev> = ArrayList(), var lengthQ: Double = 0.0, var empty: Int = 0)
@@ -139,6 +140,6 @@ object OmrScoreBuilder {
                 lines += VoiceLine("omr-$pi", partName, partName, notes)
             }
         }
-        return Score(title, "PDF'ten okundu", lines, measures, bpm)
+        return Score(title, SOURCE_LABEL, lines, measures, bpm)
     }
 }

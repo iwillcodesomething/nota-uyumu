@@ -28,7 +28,18 @@
                 <data android:mimeType="application/vnd.recordare.musicxml" />
                 <data android:mimeType="application/vnd.recordare.musicxml+xml" />
                 <data android:mimeType="application/x-musicxml" />
+                <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
+        <!-- Kamerayla çekilen nota fotoğrafının geçici olarak yazılacağı yer -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

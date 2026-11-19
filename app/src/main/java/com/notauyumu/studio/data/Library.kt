@@ -10,6 +10,9 @@ import com.notauyumu.core.Note
 import com.notauyumu.core.Score
 import com.notauyumu.core.ScoreFormatException
 import com.notauyumu.core.VoiceLine
+import com.notauyumu.core.omr.GrayImage
+import com.notauyumu.core.omr.HomrModel
+import com.notauyumu.core.omr.OmrPipeline
 import com.notauyumu.core.transcribe.BasicPitch
 import com.notauyumu.core.transcribe.OrtBasicPitchModel
 import com.notauyumu.core.transcribe.VoiceSplitter
@@ -124,17 +127,25 @@ class Library(private val context: Context) {
         return PieceEntry(id, score.title, o.getString("composer"), score.lines.map { it.name }, o.getLong("addedAt"), false, true)
     }
 
+    /** Kayıttan ya da PDF/fotoğraftan çıkarılmış eserin saklama biçimi. */
     private fun writeRecordingScore(s: Score): JSONObject = JSONObject()
         .put("title", s.title)
-        .put("measures", JSONArray(s.measures.map { JSONArray(listOf(it.startSec, it.endSec)) }))
+        .put("composer", s.composer ?: "")
+        .put("tempo", s.tempoBpm)
+        .put("rec", s.fromRecording)
+        .put("measures", JSONArray(s.measures.map { JSONArray(listOf(it.startSec, it.endSec, JSONArray(it.beats))) }))
         .put("lines", JSONArray(s.lines.map { l ->
             JSONObject().put("id", l.id).put("name", l.name)
-                .put("notes", JSONArray(l.notes.map { n -> JSONArray(listOf(n.startSec, n.durationSec, n.midi)) }))
+                .put("notes", JSONArray(l.notes.map { n -> JSONArray(listOf(n.startSec, n.durationSec, n.midi, n.chordGroup)) }))
         }))
 
     private fun readRecordingScore(o: JSONObject): Score {
         val ma = o.getJSONArray("measures")
-        val measures = (0 until ma.length()).map { i -> val m = ma.getJSONArray(i); Measure(i + 1, "${i + 1}", m.getDouble(0), m.getDouble(1), emptyList()) }
+        val measures = (0 until ma.length()).map { i ->
+            val m = ma.getJSONArray(i)
+            val beats = m.optJSONArray(2)?.let { b -> (0 until b.length()).map { b.getDouble(it) } } ?: emptyList()
+            Measure(i + 1, "${i + 1}", m.getDouble(0), m.getDouble(1), beats)
+        }
         fun measureOf(t: Double) = measures.indexOfLast { it.startSec <= t + 1e-6 }.coerceAtLeast(0) + 1
         var group = 0
         val la = o.getJSONArray("lines")
@@ -143,10 +154,44 @@ class Library(private val context: Context) {
             val na = l.getJSONArray("notes")
             VoiceLine(l.getString("id"), l.getString("name"), l.getString("name"), (0 until na.length()).map { k ->
                 val n = na.getJSONArray(k)
-                Note(n.getInt(2), n.getDouble(0), n.getDouble(1), measureOf(n.getDouble(0)), null, ++group)
+                Note(n.getInt(2), n.getDouble(0), n.getDouble(1), measureOf(n.getDouble(0)), null, if (n.length() > 3) n.getInt(3) else ++group)
             })
         }
-        return Score(o.getString("title"), "Ses kaydından", lines, measures, 0.0, fromRecording = true)
+        val rec = o.optBoolean("rec", true)
+        return Score(o.getString("title"), o.optString("composer").ifEmpty { if (rec) "Ses kaydından" else null }, lines, measures, o.optDouble("tempo", 0.0), fromRecording = rec)
+    }
+
+    /** PDF / fotoğraf: homr modeliyle telefonda okunur. [pages] sayfa görüntüleri. */
+    fun importScanned(title: String, pages: List<GrayImage>, progress: (Float, String) -> Unit): PieceEntry {
+        val (enc, dec) = homrModelFiles { f -> progress(f * 0.05f, "Nota okuyucu hazırlanıyor") }
+        val score = HomrModel(enc.path, dec.path).use { m ->
+            OmrPipeline.read(title, pages, OmrPipeline.Reader { m.read(it) }) { f, msg -> progress(0.05f + f * 0.95f, msg) }
+        }
+        val id = UUID.randomUUID().toString()
+        File(dir, "$id.json").writeText(writeRecordingScore(score).toString())
+        val o = JSONObject()
+            .put("id", id).put("title", score.title).put("composer", "PDF / fotoğraftan okundu")
+            .put("lines", JSONArray(score.lines.map { it.name })).put("addedAt", System.currentTimeMillis()).put("rec", false)
+        prefs.edit().putString("pieces", JSONArray(prefs.getString("pieces", "[]")).put(o).toString()).apply()
+        return PieceEntry(id, score.title, o.getString("composer"), score.lines.map { it.name }, o.getLong("addedAt"), false)
+    }
+
+    /** Uygulamaya gömülü homr modellerini (ilk kullanımda) dosya sistemine çıkarır; ONNX Runtime dosya yolu ister. */
+    private fun homrModelFiles(progress: (Float) -> Unit): Pair<File, File> {
+        val d = File(context.filesDir, "homr").apply { mkdirs() }
+        val names = listOf("encoder.onnx", "decoder.onnx")
+        val files = names.map { File(d, it) }
+        names.forEachIndexed { i, n ->
+            val f = files[i]
+            val expected = context.assets.openFd("homr/$n").use { it.length }
+            if (!f.exists() || f.length() != expected) {
+                val tmp = File(d, "$n.part")
+                context.assets.open("homr/$n").use { input -> tmp.outputStream().use { input.copyTo(it, 1 shl 20) } }
+                tmp.renameTo(f)
+            }
+            progress((i + 1f) / names.size)
+        }
+        return files[0] to files[1]
     }
 
     /** Dosyayı okur, doğrular ve kitaplığa ekler. Geçersizse [ScoreFormatException] fırlatır. */
@@ -154,8 +199,6 @@ class Library(private val context: Context) {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw ScoreFormatException("Dosya açılamadı.")
         if (bytes.size > 20 * 1024 * 1024) throw ScoreFormatException("Dosya çok büyük (20 MB üstü).")
-        if (bytes.size > 4 && bytes[0] == '%'.code.toByte() && bytes[1] == 'P'.code.toByte())
-            throw ScoreFormatException("Bu bir PDF. PDF notalar güvenilir biçimde okunamıyor; eseri MuseScore'da açıp MusicXML olarak dışa aktarın.")
         val name = displayName(uri)?.substringBeforeLast('.') ?: "Adsız eser"
         val score = MusicXmlParser.parse(bytes, name)
         val id = UUID.randomUUID().toString()
@@ -217,6 +260,8 @@ class Library(private val context: Context) {
             .putBoolean("octave", p.forgiveOctave).putFloat("own", p.ownGain).putFloat("others", p.othersGain)
             .putBoolean("metronome", p.metronome).putInt("latency", p.latencyMs).putFloat("backing", p.backingGain).apply()
     }
+
+    fun displayNameOf(uri: Uri): String? = displayName(uri)
 
     private fun displayName(uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
