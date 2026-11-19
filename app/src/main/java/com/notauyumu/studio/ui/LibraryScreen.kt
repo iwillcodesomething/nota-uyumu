@@ -194,25 +194,28 @@ private fun HelpCard() {
 @Composable
 private fun RecordingKindDialog(onDismiss: () -> Unit, onConfirm: (Library.RecordingKind, Int) -> Unit) {
     var tutti by remember { mutableStateOf(false) }
-    var voices by remember { mutableStateOf(4) }
+    var voices by remember { mutableStateOf(0) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Kayıtta ne var?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ChoiceRow("Tek parti", "Yalnız bir ses (ör. şefin gönderdiği alto kaydı). En doğru sonuç.", !tutti) { tutti = false }
-                ChoiceRow("Tutti", "Bütün koro birlikte. Sesler perde sırasına göre ayrılır; sesler birbirinin içinden geçtiğinde hata yapabilir.", tutti) { tutti = true }
+                ChoiceRow("Tutti", "Bütün koro birlikte. Sesler perdelerine ve sürekliliklerine göre ayrılır; notası varsa eserin sayfasından “Kayıt bağla” çok daha doğru sonuç verir.", tutti) { tutti = true }
                 if (tutti) {
                     Text("Kaç ses var?", style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
+                    val opts = listOf(0 to "Oto", 2 to "2", 3 to "3", 4 to "4", 5 to "5", 6 to "6")
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        listOf(2, 3, 4).forEachIndexed { i, n ->
+                        opts.forEachIndexed { i, (n, label) ->
                             SegmentedButton(
                                 selected = voices == n, onClick = { voices = n },
-                                shape = SegmentedButtonDefaults.itemShape(i, 3),
+                                shape = SegmentedButtonDefaults.itemShape(i, opts.size),
                                 colors = SegmentedButtonDefaults.colors(activeContainerColor = Palette.Amber.copy(alpha = 0.18f), activeContentColor = Palette.Amber, inactiveContainerColor = Palette.Surface),
-                            ) { Text(if (n == 4) "4 · SATB" else "$n") }
+                                icon = {},
+                            ) { Text(label, maxLines = 1) }
                         }
                     }
+                    Text(if (voices == 0) "Ses sayısı kayıttan tahmin edilir." else if (voices == 5) "5 ses: Soprano, Mezzosoprano, Alto, Tenor, Bas" else if (voices == 4) "4 ses: Soprano, Alto, Tenor, Bas" else "", style = MaterialTheme.typography.labelMedium, color = Palette.Muted)
                 }
                 Text("Çözümleme tamamen telefonda yapılır; internet gerekmez.", style = MaterialTheme.typography.labelMedium, color = Palette.Muted)
             }
@@ -239,6 +242,9 @@ private fun ChoiceRow(title: String, body: String, selected: Boolean, onClick: (
 
 @Composable
 private fun ImportProgressDialog(title: String, fraction: Float, label: String) {
+    // Uzun okumalarda ekran kapanıp uygulama arka plana düşmesin
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),

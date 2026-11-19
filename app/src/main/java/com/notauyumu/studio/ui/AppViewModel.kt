@@ -160,7 +160,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             busy = true
             try {
-                val score = withContext(Dispatchers.IO) { library.load(entry.id) }
+                val raw = withContext(Dispatchers.IO) { library.load(entry.id) }
+                val override = library.baseTempo(entry.id)
+                val score = if (override != null && raw.tempoBpm > 0) raw.scaled(override / raw.tempoBpm) else raw
                 piece = LoadedPiece(entry, score)
                 val last = library.lastLine(entry.id)
                 lineId = score.lines.firstOrNull { it.id == last }?.id ?: score.lines.first().id
@@ -187,6 +189,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun selectLine(id: String) {
         lineId = id
         piece?.let { library.setLastLine(it.entry.id, id) }
+    }
+
+    /** Notadan okunamayan tempoyu eser için ayarlar (♩/dk). */
+    fun setBaseTempo(bpm: Int) {
+        val p = piece ?: return
+        if (p.score.tempoBpm <= 0) return
+        val clamped = bpm.coerceIn(30, 240).toDouble()
+        library.setBaseTempo(p.entry.id, clamped)
+        piece = LoadedPiece(p.entry, p.score.scaled(clamped / p.score.tempoBpm)).also { it.backing = p.backing }
     }
 
     fun updatePrefs(p: PracticePrefs) { prefs = p; library.savePrefs(p) }

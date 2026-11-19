@@ -3,6 +3,8 @@ package com.notauyumu.core
 import com.notauyumu.core.transcribe.BasicPitch
 import com.notauyumu.core.transcribe.OrtBasicPitchModel
 import com.notauyumu.core.transcribe.VoiceSplitter
+import com.notauyumu.core.transcribe.VoiceTracker
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -67,7 +69,8 @@ class ModelIntegrationTest {
             val audio = render(s, s.lines[0].id, 0.9f / 0.16f * 0.22f) // dört ses eşit düzeyde
             val act = BasicPitch.run(m, audio)
             val notes = BasicPitch.notes(act, minMidi = VoiceSplitter.VOICE_MIN_MIDI, maxMidi = VoiceSplitter.VOICE_MAX_MIDI)
-            val voices = VoiceSplitter.satb(notes, 4)
+            assertEquals("ses sayısı tahmini", 4, VoiceTracker.estimateVoices(act))
+            val voices = VoiceTracker.split(act, 4)
             val scores = s.lines.mapIndexed { i, l -> overlapScore(l, voices[i], forgiveOctave = false) }
             s.lines.forEachIndexed { i, l -> println("Tutti ${l.name}: %.2f  (${voices[i].size} nota) ".format(scores[i]) + voices[i].joinToString { Pitch.name(it.midi) }) }
             println("Model toplam ${notes.size} nota buldu (asıl ${s.lines.sumOf { it.notes.size }})")

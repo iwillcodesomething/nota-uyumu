@@ -16,6 +16,7 @@ import com.notauyumu.core.omr.OmrPipeline
 import com.notauyumu.core.transcribe.BasicPitch
 import com.notauyumu.core.transcribe.OrtBasicPitchModel
 import com.notauyumu.core.transcribe.VoiceSplitter
+import com.notauyumu.core.transcribe.VoiceTracker
 import com.notauyumu.studio.audio.AudioDecoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -108,8 +109,9 @@ class Library(private val context: Context) {
         progress(0.92f, "Partiler ayrılıyor")
         val events = BasicPitch.notes(act, minMidi = VoiceSplitter.VOICE_MIN_MIDI, maxMidi = VoiceSplitter.VOICE_MAX_MIDI)
         if (events.isEmpty()) throw ScoreFormatException("Kayıtta nota bulunamadı. Daha net ya da daha yüksek sesli bir kayıt deneyin.")
-        val lines = if (kind == RecordingKind.SINGLE) listOf(VoiceSplitter.monophonic(events)) else VoiceSplitter.satb(events, voices)
-        val names = VoiceSplitter.voiceNames(if (kind == RecordingKind.SINGLE) 1 else voices)
+        val count = if (kind == RecordingKind.SINGLE) 1 else if (voices in 2..6) voices else VoiceTracker.estimateVoices(act)
+        val lines = if (kind == RecordingKind.SINGLE) listOf(VoiceSplitter.monophonic(events)) else VoiceTracker.split(act, count)
+        val names = VoiceSplitter.voiceNames(count)
         val title = displayName(uri)?.substringBeforeLast('.') ?: "Ses kaydı"
         val score = VoiceSplitter.toScore(title, lines, names, audio.size.toDouble() / AudioDecoder.TARGET_RATE)
         if (score.lines.isEmpty()) throw ScoreFormatException("Kayıttan parti çıkarılamadı.")
@@ -237,6 +239,10 @@ class Library(private val context: Context) {
         prefs.edit().putString("best", o.toString()).apply()
         return true
     }
+
+    /** Eser için kullanıcının girdiği nota temposu (♩/dk); yoksa null. */
+    fun baseTempo(pieceId: String): Double? = prefs.getFloat("bpm|$pieceId", -1f).takeIf { it > 0 }?.toDouble()
+    fun setBaseTempo(pieceId: String, bpm: Double) = prefs.edit().putFloat("bpm|$pieceId", bpm.toFloat()).apply()
 
     fun lastLine(pieceId: String): String? = prefs.getString("lastLine|$pieceId", null)
     fun setLastLine(pieceId: String, lineId: String) = prefs.edit().putString("lastLine|$pieceId", lineId).apply()

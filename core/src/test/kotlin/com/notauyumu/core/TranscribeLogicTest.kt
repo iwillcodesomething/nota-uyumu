@@ -3,6 +3,7 @@ package com.notauyumu.core
 import com.notauyumu.core.transcribe.BasicPitch
 import com.notauyumu.core.transcribe.BasicPitch.NoteEvent
 import com.notauyumu.core.transcribe.VoiceSplitter
+import com.notauyumu.core.transcribe.VoiceTracker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -68,34 +69,48 @@ class TranscribeLogicTest {
 
     private fun demo(): Score = MusicXmlParser.parse(listOf("../app/src/main/assets/isinma-korali.musicxml", "app/src/main/assets/isinma-korali.musicxml").map(::File).first { it.exists() }.readBytes())
 
-    @Test
-    fun satb_recoversFourVoicesFromMixedNotes() {
-        val s = demo()
-        val rnd = Random(3)
-        val mixed = s.lines.flatMap { l -> l.notes.map { NoteEvent(it.startSec + rnd.nextDouble(0.0, 0.03), it.endSec, it.midi, 0.5f + rnd.nextFloat() * 0.4f) } }.shuffled(rnd)
-        val voices = VoiceSplitter.satb(mixed, 4)
-        for (v in 0 until 4) {
-            assertEquals("ses $v perdeleri", s.lines[v].notes.map { it.midi }, voices[v].map { it.midi })
+    /** Notadan yapay "model çıktısı" üretir: her ses kendi perdesinde 0.6 olasılıkla duyulur. */
+    private fun paint(score: Score, frameSec: Double = 256.0 / 22050): BasicPitch.Activations {
+        val n = (score.durationSec / frameSec).toInt() + 2
+        val note = Array(n) { FloatArray(88) { 0.05f } }
+        for (l in score.lines) for (x in l.notes) {
+            val a = (x.startSec / frameSec).toInt(); val b = ((x.endSec - 0.03) / frameSec).toInt()
+            for (t in a until minOf(b, n)) note[t][x.midi - 21] = 0.6f
         }
-        val score = VoiceSplitter.toScore("Kayıt", voices, VoiceSplitter.voiceNames(4), s.durationSec)
-        assertTrue(score.fromRecording)
-        assertEquals(listOf("Soprano", "Alto", "Tenor", "Bas"), score.lines.map { it.name })
-        assertTrue("bölümler ~4 sn", score.measures.size in 5..8)
-        assertEquals(s.durationSec, score.measures.last().endSec, 0.2)
+        return BasicPitch.Activations(n, note, Array(n) { FloatArray(88) })
     }
 
     @Test
-    fun satb_handlesMissingVoicesAndExtraNotes() {
-        // Önce yalnız iki ses, sonra dört ses + fazladan bir nota
-        val evs = listOf(
-            NoteEvent(0.0, 1.0, 72, 0.9f), NoteEvent(0.0, 1.0, 48, 0.9f),
-            NoteEvent(1.0, 2.0, 74, 0.9f), NoteEvent(1.0, 2.0, 67, 0.8f), NoteEvent(1.0, 2.0, 60, 0.8f),
-            NoteEvent(1.0, 2.0, 50, 0.9f), NoteEvent(1.0, 2.0, 55, 0.1f),
-        )
-        val v = VoiceSplitter.satb(evs, 4)
-        assertEquals(listOf(72, 74), v[0].map { it.midi })
-        assertEquals(listOf(48, 50), v[3].map { it.midi })
-        assertEquals(listOf(67), v[1].map { it.midi })
-        assertEquals(listOf(60), v[2].map { it.midi })
+    fun voiceTracker_recoversFourVoicesIncludingUnisons() {
+        val s = demo()
+        // Soprano ve Alto'yu ilk iki notada aynı perdeye getir (koroda sık görülen birlik)
+        val alto = s.lines[1].copy(notes = s.lines[1].notes.mapIndexed { i, n -> if (i < 2) n.copy(midi = s.lines[0].notes[i].midi) else n })
+        // Örnek koralde tenor yüksek yazılmış; gerçekçi bir tenor için bir oktav indir
+        val tenor = s.lines[2].copy(notes = s.lines[2].notes.map { it.copy(midi = it.midi - 12) })
+        val score = s.copy(lines = listOf(s.lines[0], alto, tenor, s.lines[3]))
+        val act = paint(score)
+        assertEquals(4, VoiceTracker.estimateVoices(act))
+        val voices = VoiceTracker.split(act, 4) { it * 256.0 / 22050 }
+        for (v in 0 until 4) {
+            val want = score.lines[v].notes.map { it.midi }.fold(mutableListOf<Int>()) { acc, m -> if (acc.lastOrNull() != m) acc += m; acc }
+            val got = voices[v].map { it.midi }.fold(mutableListOf<Int>()) { acc, m -> if (acc.lastOrNull() != m) acc += m; acc }
+            // İlk birlik notası (aralık henüz öğrenilmemişken) ya da seslerin çaprazlaştığı tek bir yer kaçabilir
+            val d = Array(want.size + 1) { IntArray(got.size + 1) }
+            for (i in 1..want.size) for (j in 1..got.size) d[i][j] = if (want[i - 1] == got[j - 1]) d[i - 1][j - 1] + 1 else maxOf(d[i - 1][j], d[i][j - 1])
+            val sim = 2.0 * d[want.size][got.size] / (want.size + got.size)
+            assertTrue("ses $v: beklenen $want, gelen $got", sim >= 0.9)
+        }
+    }
+
+    @Test
+    fun voiceTracker_silentVoiceAndRecordingNames() {
+        val s = demo()
+        val act = paint(s.copy(lines = listOf(s.lines[0], s.lines[3]))) // yalnız Soprano + Bas
+        assertEquals(2, VoiceTracker.estimateVoices(act))
+        val v = VoiceTracker.split(act, 2) { it * 256.0 / 22050 }
+        assertTrue(v[0].all { it.midi >= 67 } && v[1].all { it.midi <= 55 })
+        val score = VoiceSplitter.toScore("Kayıt", VoiceTracker.split(act, 5), VoiceSplitter.voiceNames(5), s.durationSec)
+        assertEquals("Soprano", score.lines.first().name)
+        assertEquals(listOf("Soprano", "Mezzosoprano", "Alto", "Tenor", "Bas"), VoiceSplitter.voiceNames(5))
     }
 }

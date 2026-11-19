@@ -97,7 +97,7 @@ class OmrLogicTest {
         val women2 = chord("1", "C5", "G4") + sym("barline")
         val men2 = chord("1", "E3", "C3") + sym("barline")
         val s = OmrScoreBuilder.build("Kapalı", listOf(listOf(women1, men1), listOf(women2, men2)), bpm = 60.0)
-        assertEquals(listOf("1. porte · üst ses", "1. porte · alt ses", "2. porte · üst ses", "2. porte · alt ses"), s.lines.map { it.name })
+        assertEquals(listOf("Soprano · 1. porte · üst ses", "Alto · 1. porte · alt ses", "Tenor · 2. porte · üst ses", "Bas · 2. porte · alt ses"), s.lines.map { it.name })
         assertEquals(listOf(76, 74, 72), s.lines[0].notes.map { it.midi })
         assertEquals(listOf(72, 71, 67), s.lines[1].notes.map { it.midi })
         assertEquals(listOf(55, 55, 52), s.lines[2].notes.map { it.midi })

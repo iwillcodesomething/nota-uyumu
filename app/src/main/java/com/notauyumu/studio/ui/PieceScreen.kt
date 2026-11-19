@@ -94,10 +94,19 @@ fun PieceScreen(vm: AppViewModel) {
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
             )
 
-            if (score.composer == com.notauyumu.core.omr.OmrScoreBuilder.SOURCE_LABEL) Text(
-                "Bu nota otomatik okundu. Tempo nota üzerinden okunamadığı için ♩ = 90 kabul edildi; tempo kaydırıcısıyla ayarlayabilirsin. Bazı notalar hatalı olabilir.",
-                style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
-            )
+            if (score.composer == com.notauyumu.core.omr.OmrScoreBuilder.SOURCE_LABEL) {
+                Text(
+                    "Bu nota otomatik okundu. Tempo işareti okunamaz; notadaki değeri aşağıya gir. Bazı notalar hatalı olabilir.",
+                    style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.Surface).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    Text("Notadaki tempo  ♩ =", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    val bpm = score.tempoBpm.roundToInt()
+                    TextButton(onClick = { vm.setBaseTempo(bpm - 5) }) { Text("−5", color = Palette.Amber) }
+                    Text("$bpm", style = MaterialTheme.typography.titleLarge, color = Palette.Amber)
+                    TextButton(onClick = { vm.setBaseTempo(bpm + 5) }) { Text("+5", color = Palette.Amber) }
+                }
+            }
             if (rec) Text(
                 "Bu partiler ses kaydından otomatik çıkarıldı. Bazı notalar eksik ya da hatalı olabilir; şüphelendiğin yerde orijinal kaydı dinle.",
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
