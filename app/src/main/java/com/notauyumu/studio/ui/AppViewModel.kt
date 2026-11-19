@@ -134,6 +134,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Açık nota için referans kaydı: kayıt notaya eşlenir, yeni "· kayıtla" eseri açılır. */
+    fun importAligned(uri: Uri) {
+        val p = piece ?: return
+        if (importProgress != null) return
+        importTitle = "Kayıt notayla eşleştiriliyor"
+        importProgress = 0f to "Başlıyor"
+        viewModelScope.launch {
+            try {
+                val entry = withContext(Dispatchers.Default) {
+                    library.importAligned(p.entry.id, uri) { f, label -> viewModelScope.launch(Dispatchers.Main) { importProgress = f to label } }
+                }
+                entries = library.entries()
+                importProgress = null
+                openPiece(entry)
+            } catch (e: ScoreFormatException) {
+                message = e.message
+            } catch (e: Throwable) {
+                message = "Eşleştirme yapılamadı: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                importProgress = null
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- kitaplık
 
     fun import(uri: Uri) {

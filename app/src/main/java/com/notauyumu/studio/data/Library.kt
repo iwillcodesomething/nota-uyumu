@@ -10,6 +10,7 @@ import com.notauyumu.core.Note
 import com.notauyumu.core.Score
 import com.notauyumu.core.ScoreFormatException
 import com.notauyumu.core.VoiceLine
+import com.notauyumu.core.align.ScoreAligner
 import com.notauyumu.core.omr.GrayImage
 import com.notauyumu.core.omr.HomrModel
 import com.notauyumu.core.omr.OmrPipeline
@@ -24,6 +25,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import kotlin.math.roundToInt
 
 data class PieceEntry(
     val id: String,
@@ -57,6 +59,8 @@ class Library(private val context: Context) {
 
     companion object {
         const val DEMO_ID = "demo-isinma-korali"
+        /** Nota + kayıt eşleştirmesiyle oluşturulan eserlerin kaynak etiketi. */
+        const val ALIGNED_LABEL = "Nota + kayıt"
         private const val DEMO_ASSET = "isinma-korali.musicxml"
     }
 
@@ -97,15 +101,7 @@ class Library(private val context: Context) {
      * [progress]: 0..1 ve aşama adı.
      */
     fun importRecording(uri: Uri, kind: RecordingKind, voices: Int, progress: (Float, String) -> Unit): PieceEntry {
-        progress(0f, "Kayıt okunuyor")
-        val audio = AudioDecoder.decode(context, uri) { progress(it * 0.2f, "Kayıt okunuyor") }
-        // Sesi normalize et (çok kısık kayıtlar için)
-        val peak = audio.maxOf { kotlin.math.abs(it) }.coerceAtLeast(1e-4f)
-        if (peak < 0.5f) { val g = 0.7f / peak; for (i in audio.indices) audio[i] *= g }
-        val modelBytes = context.assets.open("basic-pitch/nmp.onnx").use { it.readBytes() }
-        val act = OrtBasicPitchModel(modelBytes).use { m ->
-            BasicPitch.run(m, audio) { progress(0.2f + it * 0.7f, "Notalar çıkarılıyor") }
-        }
+        val (audio, act) = transcribe(uri, progress)
         progress(0.92f, "Partiler ayrılıyor")
         val events = BasicPitch.notes(act, minMidi = VoiceSplitter.VOICE_MIN_MIDI, maxMidi = VoiceSplitter.VOICE_MAX_MIDI)
         if (events.isEmpty()) throw ScoreFormatException("Kayıtta nota bulunamadı. Daha net ya da daha yüksek sesli bir kayıt deneyin.")
@@ -118,9 +114,7 @@ class Library(private val context: Context) {
 
         val id = UUID.randomUUID().toString()
         File(dir, "$id.json").writeText(writeRecordingScore(score).toString())
-        val pcm = ByteBuffer.allocate(audio.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (v in audio) pcm.putShort((v.coerceIn(-1f, 1f) * 32767).toInt().toShort())
-        File(dir, "$id.pcm").writeBytes(pcm.array())
+        writePcm(id, audio)
         val o = JSONObject()
             .put("id", id).put("title", score.title).put("composer", if (kind == RecordingKind.SINGLE) "Ses kaydı · tek parti" else "Ses kaydı · tutti")
             .put("lines", JSONArray(score.lines.map { it.name })).put("addedAt", System.currentTimeMillis()).put("rec", true)
@@ -129,13 +123,77 @@ class Library(private val context: Context) {
         return PieceEntry(id, score.title, o.getString("composer"), score.lines.map { it.name }, o.getLong("addedAt"), false, true)
     }
 
+    /** Kaydı çözer, normalize eder ve Basic Pitch ile nota olasılıklarını çıkarır (ilerlemenin %0–90'ı). */
+    private fun transcribe(uri: Uri, progress: (Float, String) -> Unit): Pair<FloatArray, BasicPitch.Activations> {
+        progress(0f, "Kayıt okunuyor")
+        val audio = AudioDecoder.decode(context, uri) { progress(it * 0.2f, "Kayıt okunuyor") }
+        // Sesi normalize et (çok kısık kayıtlar için)
+        val peak = audio.maxOf { kotlin.math.abs(it) }.coerceAtLeast(1e-4f)
+        if (peak < 0.5f) { val g = 0.7f / peak; for (i in audio.indices) audio[i] *= g }
+        val modelBytes = context.assets.open("basic-pitch/nmp.onnx").use { it.readBytes() }
+        val act = OrtBasicPitchModel(modelBytes).use { m ->
+            BasicPitch.run(m, audio) { progress(0.2f + it * 0.7f, "Notalar çıkarılıyor") }
+        }
+        return audio to act
+    }
+
+    private fun writePcm(id: String, audio: FloatArray) {
+        val pcm = ByteBuffer.allocate(audio.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (v in audio) pcm.putShort((v.coerceIn(-1f, 1f) * 32767).toInt().toShort())
+        File(dir, "$id.pcm").writeBytes(pcm.array())
+    }
+
+    /**
+     * Nota + referans kaydı: kayıt notaya eşlenir (kayıt eserin ortasından başlayabilir, tempo farklı ve
+     * değişken olabilir), nota kaydın zamanına taşınır, kayıt senkron eşlik olur. Notası kayıtla açıkça
+     * oktav farklı çıkan partiler (ör. okunamayan 8vb anahtarı) düzeltilir. Yeni bir eser olarak eklenir.
+     */
+    fun importAligned(scoreId: String, uri: Uri, progress: (Float, String) -> Unit): PieceEntry {
+        val raw = load(scoreId)
+        val override = baseTempo(scoreId)
+        val score = if (override != null && raw.tempoBpm > 0) raw.scaled(override / raw.tempoBpm) else raw
+        val (audio, act) = transcribe(uri, progress)
+        progress(0.92f, "Kayıt notayla eşleştiriliyor")
+        val match = ScoreAligner.alignAnyKey(score, act)
+            ?: throw ScoreFormatException("Kayıt bu notayla eşleştirilemedi: kayıtta müzik bulunamadı ya da kayıt notadan çok daha uzun.")
+        val al = match.alignment
+        if (al.cost > 0.22) throw ScoreFormatException("Bu kayıt seçili notaya benzemiyor (uyumsuzluk %${(al.cost * 100).roundToInt()}). Doğru eseri ve kaydı seçtiğinden emin ol.")
+        val retimed = ScoreAligner.retime(ScoreAligner.transpose(score, match.semitones), al)
+        if (retimed.measures.size < 2) throw ScoreFormatException("Kayıt notanın çok kısa bir bölümüne denk geliyor.")
+        progress(0.96f, "Partiler kayıtla karşılaştırılıyor")
+        val (fixed, fixes) = ScoreAligner.correct(retimed, act)
+        val agree = ScoreAligner.agreement(fixed, act)
+        val shifted = fixes.map { it.lineId }.toSet()
+        val lines = fixed.lines.map { l ->
+            val pct = ((agree[l.id] ?: 0.0) * 100).roundToInt()
+            l.copy(name = l.name + " · uyum %$pct" + if (l.id in shifted) " · oktav düzeltildi" else "")
+        }
+        val avg = (agree.values.average() * 100).roundToInt()
+        val key = when {
+            match.semitones == 0 -> ""
+            else -> " · kayıt notadan ${kotlin.math.abs(match.semitones)} yarım ses ${if (match.semitones > 0) "yüksek" else "pes"}"
+        }
+        val composer = "$ALIGNED_LABEL · ${ScoreAligner.rangeLabel(fixed)} · uyum %$avg$key"
+        val out = fixed.copy(title = "${score.title} · kayıtla", composer = composer, lines = lines)
+
+        val id = UUID.randomUUID().toString()
+        File(dir, "$id.json").writeText(writeRecordingScore(out).toString())
+        writePcm(id, audio)
+        val o = JSONObject()
+            .put("id", id).put("title", out.title).put("composer", composer)
+            .put("lines", JSONArray(out.lines.map { it.name })).put("addedAt", System.currentTimeMillis()).put("rec", true)
+        prefs.edit().putString("pieces", JSONArray(prefs.getString("pieces", "[]")).put(o).toString()).apply()
+        progress(1f, "Hazır")
+        return PieceEntry(id, out.title, composer, out.lines.map { it.name }, o.getLong("addedAt"), false, true)
+    }
+
     /** Kayıttan ya da PDF/fotoğraftan çıkarılmış eserin saklama biçimi. */
     private fun writeRecordingScore(s: Score): JSONObject = JSONObject()
         .put("title", s.title)
         .put("composer", s.composer ?: "")
         .put("tempo", s.tempoBpm)
         .put("rec", s.fromRecording)
-        .put("measures", JSONArray(s.measures.map { JSONArray(listOf(it.startSec, it.endSec, JSONArray(it.beats))) }))
+        .put("measures", JSONArray(s.measures.map { JSONArray(listOf(it.startSec, it.endSec, JSONArray(it.beats), it.label)) }))
         .put("lines", JSONArray(s.lines.map { l ->
             JSONObject().put("id", l.id).put("name", l.name)
                 .put("notes", JSONArray(l.notes.map { n -> JSONArray(listOf(n.startSec, n.durationSec, n.midi, n.chordGroup)) }))
@@ -146,7 +204,7 @@ class Library(private val context: Context) {
         val measures = (0 until ma.length()).map { i ->
             val m = ma.getJSONArray(i)
             val beats = m.optJSONArray(2)?.let { b -> (0 until b.length()).map { b.getDouble(it) } } ?: emptyList()
-            Measure(i + 1, "${i + 1}", m.getDouble(0), m.getDouble(1), beats)
+            Measure(i + 1, m.optString(3, "${i + 1}"), m.getDouble(0), m.getDouble(1), beats)
         }
         fun measureOf(t: Double) = measures.indexOfLast { it.startSec <= t + 1e-6 }.coerceAtLeast(0) + 1
         var group = 0

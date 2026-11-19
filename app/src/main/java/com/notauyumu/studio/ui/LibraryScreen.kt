@@ -241,7 +241,7 @@ private fun ChoiceRow(title: String, body: String, selected: Boolean, onClick: (
 }
 
 @Composable
-private fun ImportProgressDialog(title: String, fraction: Float, label: String) {
+internal fun ImportProgressDialog(title: String, fraction: Float, label: String) {
     // Uzun okumalarda ekran kapanıp uygulama arka plana düşmesin
     val view = androidx.compose.ui.platform.LocalView.current
     androidx.compose.runtime.DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
