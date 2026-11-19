@@ -71,8 +71,7 @@ class ModelIntegrationTest {
             val scores = s.lines.mapIndexed { i, l -> overlapScore(l, voices[i], forgiveOctave = false) }
             s.lines.forEachIndexed { i, l -> println("Tutti ${l.name}: %.2f  (${voices[i].size} nota) ".format(scores[i]) + voices[i].joinToString { Pitch.name(it.midi) }) }
             println("Model toplam ${notes.size} nota buldu (asıl ${s.lines.sumOf { it.notes.size }})")
-            println("HAM_NOTALAR " + notes.joinToString(";") { "%.4f,%.4f,%d,%.4f".format(java.util.Locale.ROOT, it.startSec, it.endSec, it.midi, it.amplitude) })
-            assertTrue("tutti ortalama doğruluk düşük: $scores", scores.average() >= 0.55)
+            assertTrue("tutti ortalama doğruluk düşük: $scores", scores.average() >= 0.75)
         }
     }
 }
