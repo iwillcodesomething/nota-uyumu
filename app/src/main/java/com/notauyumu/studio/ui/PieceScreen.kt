@@ -115,7 +115,7 @@ fun PieceScreen(vm: AppViewModel) {
                 "Partiler notadan, zamanlama kayıttan geliyor: kayıt eşlik olarak senkron çalar. Uyum yüzdesi, notadaki seslerin kayıtta ne kadarının duyulduğunu gösterir; düşükse o partide nota okuma hatası olabilir.",
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
             ) else if (rec) Text(
-                "Bu partiler ses kaydından otomatik çıkarıldı. Bazı notalar eksik ya da hatalı olabilir; şüphelendiğin yerde orijinal kaydı dinle.",
+                "Bu partiler ses kaydından otomatik çıkarıldı. Bazı notalar eksik ya da hatalı olabilir; özellikle seslerin birbirinin üstüne/altına geçtiği yerlerde. Eserin notası varsa notayı ekleyip orada \"Referans kaydıyla eşleştir\"i kullan: partiler notadan gelir, çok daha doğru olur.",
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
             )
             if (!rec) Row(

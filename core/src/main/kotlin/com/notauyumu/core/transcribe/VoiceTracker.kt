@@ -15,7 +15,12 @@ import kotlin.math.abs
  *  - güçlü bir adayı kimseye vermemek ya da bir sesi susturmak maliyetlidir.
  * Ses merkezleri birkaç turda kaydın kendisinden öğrenilir.
  *
- * "Bisiklet" (SSATB) gerçek kaydında ses başına ortalama doğruluk %42'den %63'e çıktı (bas %52 → %74).
+ * Ardından [refine] izleri zaman boyunca Viterbi ile iyileştirir.
+ *
+ * "Bisiklet" (SSATB) gerçek kaydında ses başına doğruluk: eski ayırıcı %42, kare izleyici %68,
+ * iyileştirmeyle %83 (S 93, MS 86, A 79, T 72, B 82; nota zamanları kayda oturtulmuş kıyas notası).
+ * Tenorun kalan hatası çoğunlukla eserin kendisinden: tenor melodisi karelerin üçte birinde basın
+ * altına iner; perde bilgisi tek başına hangi sesin hangisi olduğunu ayırt edemez.
  */
 object VoiceTracker {
     data class Tuning(
@@ -143,6 +148,145 @@ object VoiceTracker {
         return out
     }
 
-    fun split(act: BasicPitch.Activations, voices: Int, tuning: Tuning = Tuning(), time: (Int) -> Double = BasicPitch::frameToTime): List<List<NoteEvent>> =
-        track(act, voices, tuning).map { toNotes(it, time = time) }
+    fun split(act: BasicPitch.Activations, voices: Int, tuning: Tuning = Tuning(), time: (Int) -> Double = BasicPitch::frameToTime): List<List<NoteEvent>> {
+        val init = track(act, voices, tuning)
+        val out = if (voices >= 2) refine(act, init) else init
+        return out.map { toNotes(it, time = time) }
+    }
+
+    // ------------------------------------------------------------------ zamansal iyileştirme
+
+    /** [refine] ağırlıkları (Bisiklet SSATB kaydı ve sentezlenmiş 4 sesli koralde ayarlandı). */
+    data class Refine(
+        val eps: Double = 0.5,
+        val silence: Double = 3.0,
+        val share: Double = 0.5,
+        /** Seslerin sık sık aynı perdede buluştuğu (unison) kayıtlarda kullanılan paylaşım cezası. */
+        val shareUnison: Double = 0.25,
+        /** share ile çözülen izde, güçlü seslerin olduğu karelerin bu kadarından fazlasında unison varsa shareUnison'a geçilir. */
+        val unisonSwitch: Double = 0.2,
+        val order: Double = 2.0,
+        val jump: Double = 2.0,
+        val step: Double = 0.4,
+        val silenceSwitch: Double = 2.0,
+        val range: Double = 0.15,
+        val freeRange: Double = 4.0,
+        val onset: Double = 8.0,
+        val onsetWindow: Int = 3,
+        val rounds: Int = 4,
+    )
+
+    /**
+     * Kare kare atamayı zaman boyunca iyileştirir: her ses sırayla, diğerleri sabitken, bütün kayıt
+     * üzerinde Viterbi ile yeniden izlenir (faktöriyel HMM'de koordinat iniş). Kare kare izleyici geleceği
+     * göremez; bu adım bir sesin kısa bir süre zayıf duyulduğu yerlerde perdesini korumasını, bir notaya
+     * ancak orada gerçekten yeni bir başlangıç (onset) varsa geçmesini sağlar. Unison oranı kayıttan
+     * ölçülür: sesleri çok buluşan eserlerde (ör. Bisiklet'te alto ile tenor karelerin üçte birinde aynı
+     * perdede) paylaşım cezası düşürülür.
+     */
+    fun refine(act: BasicPitch.Activations, init: Array<IntArray>, k: Refine = Refine()): Array<IntArray> {
+        val first = refineWith(act, init, k, k.share)
+        return if (unisonFraction(act, first) > k.unisonSwitch) refineWith(act, init, k, k.shareUnison) else first
+    }
+
+    /** Güçlü (≥0.5) bir sesin duyulduğu karelerde iki sesin aynı perdeyi söylediği karelerin oranı. */
+    fun unisonFraction(act: BasicPitch.Activations, tr: Array<IntArray>): Double {
+        var n = 0; var dup = 0
+        for (t in 0 until act.nFrames step 3) {
+            val f = act.note[t]
+            var strong = false
+            for (p in (MIN_MIDI - BasicPitch.MIDI_OFFSET)..(MAX_MIDI - BasicPitch.MIDI_OFFSET)) {
+                if (p in 1 until BasicPitch.N_PITCH - 1 && f[p] >= 0.5f && f[p] >= f[p - 1] && f[p] >= f[p + 1]) { strong = true; break }
+            }
+            if (!strong) continue
+            n++
+            val on = tr.map { it[t] }.filter { it > 0 }
+            if (on.size != on.toSet().size) dup++
+        }
+        return if (n == 0) 0.0 else dup.toDouble() / n
+    }
+
+    private fun refineWith(act: BasicPitch.Activations, init: Array<IntArray>, k: Refine, share: Double): Array<IntArray> {
+        val n = act.nFrames
+        val voices = init.size
+        val np = MAX_MIDI - MIN_MIDI + 1
+        val sil = np // sessiz durum
+        val ns = np + 1
+        val off = MIN_MIDI - BasicPitch.MIDI_OFFSET
+        // Perde olasılığından gelen maliyet ve "buraya geçiş için başlangıç yok" cezası
+        val emBase = Array(n) { t -> FloatArray(np) { i -> (-kotlin.math.ln(act.note[t][off + i] + k.eps)).toFloat() } }
+        val onsetPen = Array(n) { FloatArray(np) }
+        for (t in 0 until n) for (i in 0 until np) {
+            var m = 0f
+            for (u in maxOf(0, t - k.onsetWindow)..minOf(n - 1, t + k.onsetWindow)) m = maxOf(m, act.onset[u][off + i])
+            onsetPen[t][i] = (k.onset * (1 - minOf(1f, m / 0.5f))).toFloat()
+        }
+        val tr = Array(voices) { init[it].copyOf() }
+        val em = FloatArray(ns)
+        val back = Array(n) { ByteArray(ns) }
+        var d = DoubleArray(ns); var nd = DoubleArray(ns)
+        repeat(k.rounds) {
+            val centers = DoubleArray(voices) { v ->
+                val xs = tr[v].filter { it > 0 }.sorted()
+                if (xs.isEmpty()) 60.0 else xs[xs.size / 2].toDouble()
+            }
+            for (v in 0 until voices) {
+                fun emission(t: Int) {
+                    for (i in 0 until np) {
+                        val p = MIN_MIDI + i
+                        var c = emBase[t][i] + k.range * sq(maxOf(0.0, abs(p - centers[v]) - k.freeRange))
+                        for (u in 0 until voices) {
+                            if (u == v) continue
+                            val q = tr[u][t]
+                            if (q <= 0) continue
+                            if (q == p) c += share
+                            val w = if (abs(u - v) == 1) 1.0 else 0.5
+                            if ((u < v && p > q) || (u > v && p < q)) c += k.order * w
+                        }
+                        em[i] = c.toFloat()
+                    }
+                    em[sil] = k.silence.toFloat()
+                }
+                emission(0)
+                for (i in 0 until ns) d[i] = em[i].toDouble()
+                for (t in 1 until n) {
+                    emission(t)
+                    // en iyi önceki perde (geçiş için)
+                    var bestAll = Double.MAX_VALUE; var bestAllI = 0
+                    for (i in 0 until np) if (d[i] < bestAll) { bestAll = d[i]; bestAllI = i }
+                    for (i in 0 until np) {
+                        // aynı perdede kal
+                        var best = d[i]; var bi = i
+                        // sessizlikten gir
+                        val fromSil = d[sil] + k.silenceSwitch + onsetPen[t][i]
+                        if (fromSil < best) { best = fromSil; bi = sil }
+                        // başka perdeden geç (12 yarım sesten uzak geçişler sabit maliyetli)
+                        val pen = k.jump + onsetPen[t][i]
+                        val far = bestAll + pen + k.step * 12
+                        if (far < best && bestAllI != i) { best = far; bi = bestAllI }
+                        for (j in maxOf(0, i - 11)..minOf(np - 1, i + 11)) {
+                            if (j == i) continue
+                            val c = d[j] + pen + k.step * abs(i - j)
+                            if (c < best) { best = c; bi = j }
+                        }
+                        nd[i] = best + em[i]; back[t][i] = bi.toByte()
+                    }
+                    // sessizliğe geç ya da sessiz kal
+                    var best = d[sil]; var bi = sil
+                    for (j in 0 until np) { val c = d[j] + k.silenceSwitch; if (c < best) { best = c; bi = j } }
+                    nd[sil] = best + em[sil]; back[t][sil] = bi.toByte()
+                    val x = d; d = nd; nd = x
+                }
+                var s = 0
+                for (i in 1 until ns) if (d[i] < d[s]) s = i
+                for (t in n - 1 downTo 0) {
+                    tr[v][t] = if (s == sil) -1 else MIN_MIDI + s
+                    if (t > 0) s = back[t][s].toInt()
+                }
+            }
+        }
+        return tr
+    }
+
+    private fun sq(x: Double) = x * x
 }
