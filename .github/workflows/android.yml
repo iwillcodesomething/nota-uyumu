@@ -46,6 +46,8 @@ jobs:
           echo "OMR_CHOIR_DIR=$RUNNER_TEMP/koro" >> "$GITHUB_ENV"
 
       - name: Çekirdek testleri
+        env:
+          OMR_DUMP: "1"
         run: ./gradlew --no-daemon :core:test
 
       - name: Debug APK

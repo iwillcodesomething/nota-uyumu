@@ -69,6 +69,7 @@ class OmrModelTest {
         run {
             val page = StaffFinder.preparePage(loadGray(img))
             val st = StaffFinder.find(page)
+            if (System.getenv("OMR_DUMP") != null) println("GORSEL_BASE64 $name " + java.util.Base64.getEncoder().encodeToString(img.readBytes()))
             println("Koro ($name) porteler: " + st.joinToString { "y=%.0f u=%.1f x=%d-%d".format(it.midY, it.unit, it.x0, it.x1) } + "  sistemler=" + StaffFinder.systems(page, st).map { it.size })
         }
         model().use { m ->
