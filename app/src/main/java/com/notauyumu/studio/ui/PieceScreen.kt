@@ -66,6 +66,8 @@ fun PieceScreen(vm: AppViewModel) {
     val context = LocalContext.current
     var confirmDelete by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
+    val referencePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) vm.importAligned(uri) }
+    vm.importProgress?.let { (f, label) -> ImportProgressDialog(vm.importTitle, f, label) }
 
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) vm.startSession(Mode.SING) else vm.message = "Söyleme modu için mikrofon izni gerekli."
@@ -88,20 +90,49 @@ fun PieceScreen(vm: AppViewModel) {
             Text(score.title, style = MaterialTheme.typography.headlineSmall)
             val minutes = score.durationSec.roundToInt().let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" }
             val rec = score.fromRecording
+            val aligned = rec && score.composer?.startsWith(com.notauyumu.studio.data.Library.ALIGNED_LABEL) == true
             Text(
-                (if (rec) listOfNotNull(score.composer, "${score.measures.size} bölüm", minutes)
+                (if (aligned) listOfNotNull(score.composer, minutes)
+                else if (rec) listOfNotNull(score.composer, "${score.measures.size} bölüm", minutes)
                 else listOfNotNull(score.composer, "${score.measures.size} ölçü", "♩ = ${score.tempoBpm.roundToInt()}", minutes)).joinToString("  ·  "),
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
             )
 
-            if (score.composer == com.notauyumu.core.omr.OmrScoreBuilder.SOURCE_LABEL) Text(
-                "Bu nota otomatik okundu. Tempo nota üzerinden okunamadığı için ♩ = 90 kabul edildi; tempo kaydırıcısıyla ayarlayabilirsin. Bazı notalar hatalı olabilir.",
+            if (score.composer == com.notauyumu.core.omr.OmrScoreBuilder.SOURCE_LABEL) {
+                Text(
+                    "Bu nota otomatik okundu. Tempo işareti okunamaz; notadaki değeri aşağıya gir. Bazı notalar hatalı olabilir.",
+                    style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.Surface).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    Text("Notadaki tempo  ♩ =", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    val bpm = score.tempoBpm.roundToInt()
+                    TextButton(onClick = { vm.setBaseTempo(bpm - 5) }) { Text("−5", color = Palette.Amber) }
+                    Text("$bpm", style = MaterialTheme.typography.titleLarge, color = Palette.Amber)
+                    TextButton(onClick = { vm.setBaseTempo(bpm + 5) }) { Text("+5", color = Palette.Amber) }
+                }
+            }
+            if (aligned) Text(
+                "Partiler notadan, zamanlama kayıttan geliyor: kayıt eşlik olarak senkron çalar. Uyum yüzdesi, notadaki seslerin kayıtta ne kadarının duyulduğunu gösterir; düşükse o partide nota okuma hatası olabilir.",
+                style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
+            ) else if (rec) Text(
+                "Bu partiler ses kaydından otomatik çıkarıldı. Bazı notalar eksik ya da hatalı olabilir; özellikle seslerin birbirinin üstüne/altına geçtiği yerlerde. Eserin notası varsa notayı ekleyip orada \"Referans kaydıyla eşleştir\"i kullan: partiler notadan gelir, çok daha doğru olur.",
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
             )
-            if (rec) Text(
-                "Bu partiler ses kaydından otomatik çıkarıldı. Bazı notalar eksik ya da hatalı olabilir; şüphelendiğin yerde orijinal kaydı dinle.",
-                style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
-            )
+            if (!rec) Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.Surface)
+                    .clickable { referencePicker.launch(arrayOf("audio/*")) }.padding(horizontal = 14.dp, vertical = 12.dp),
+            ) {
+                Icon(Icons.Outlined.Headphones, null, tint = Palette.Amber, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Referans kaydıyla eşleştir", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Bu eserin bir kaydını seç: nota kayda oturtulur, kayıt eşlik olarak çalar, partilerin kayıtla uyumu gösterilir. Kayıt eserin ortasından başlayabilir, farklı tempoda ya da tonda olabilir.",
+                        style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
+                    )
+                }
+            }
             SectionLabel("Partini seç")
             score.lines.forEach { line ->
                 LineRow(line, selected = line.id == vm.lineId, best = vm.best(line.id)) { vm.selectLine(line.id) }
@@ -119,7 +150,7 @@ fun PieceScreen(vm: AppViewModel) {
                     val r = vm.range
                     val first = score.measures[r.first - 1].label
                     val last = score.measures[r.last - 1].label
-                    LabeledValue(if (rec) "Bölümler" else "Ölçüler", if (r.first == 1 && r.last == score.measures.size) "Tümü ($first–$last)" else "$first – $last")
+                    LabeledValue(if (rec && !aligned) "Bölümler" else "Ölçüler", if (r.first == 1 && r.last == score.measures.size) "Tümü ($first–$last)" else "$first – $last")
                     RangeSlider(
                         value = r.first.toFloat()..r.last.toFloat(),
                         onValueChange = { vm.selectRange(it.start.roundToInt()..it.endInclusive.roundToInt()) },

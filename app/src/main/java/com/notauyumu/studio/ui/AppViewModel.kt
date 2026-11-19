@@ -134,6 +134,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Açık nota için referans kaydı: kayıt notaya eşlenir, yeni "· kayıtla" eseri açılır. */
+    fun importAligned(uri: Uri) {
+        val p = piece ?: return
+        if (importProgress != null) return
+        importTitle = "Kayıt notayla eşleştiriliyor"
+        importProgress = 0f to "Başlıyor"
+        viewModelScope.launch {
+            try {
+                val entry = withContext(Dispatchers.Default) {
+                    library.importAligned(p.entry.id, uri) { f, label -> viewModelScope.launch(Dispatchers.Main) { importProgress = f to label } }
+                }
+                entries = library.entries()
+                importProgress = null
+                openPiece(entry)
+            } catch (e: ScoreFormatException) {
+                message = e.message
+            } catch (e: Throwable) {
+                message = "Eşleştirme yapılamadı: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                importProgress = null
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- kitaplık
 
     fun import(uri: Uri) {
@@ -160,7 +184,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             busy = true
             try {
-                val score = withContext(Dispatchers.IO) { library.load(entry.id) }
+                val raw = withContext(Dispatchers.IO) { library.load(entry.id) }
+                val override = library.baseTempo(entry.id)
+                val score = if (override != null && raw.tempoBpm > 0) raw.scaled(override / raw.tempoBpm) else raw
                 piece = LoadedPiece(entry, score)
                 val last = library.lastLine(entry.id)
                 lineId = score.lines.firstOrNull { it.id == last }?.id ?: score.lines.first().id
@@ -187,6 +213,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun selectLine(id: String) {
         lineId = id
         piece?.let { library.setLastLine(it.entry.id, id) }
+    }
+
+    /** Notadan okunamayan tempoyu eser için ayarlar (♩/dk). */
+    fun setBaseTempo(bpm: Int) {
+        val p = piece ?: return
+        if (p.score.tempoBpm <= 0) return
+        val clamped = bpm.coerceIn(30, 240).toDouble()
+        library.setBaseTempo(p.entry.id, clamped)
+        piece = LoadedPiece(p.entry, p.score.scaled(clamped / p.score.tempoBpm)).also { it.backing = p.backing }
     }
 
     fun updatePrefs(p: PracticePrefs) { prefs = p; library.savePrefs(p) }

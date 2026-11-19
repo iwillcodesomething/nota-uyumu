@@ -152,6 +152,19 @@ object OmrScoreBuilder {
                 lines += VoiceLine("omr-$pi", partName, partName, notes)
             }
         }
-        return Score(title, SOURCE_LABEL, lines, measures, bpm)
+        return Score(title, SOURCE_LABEL, choirNames(lines), measures, bpm)
+    }
+
+    /**
+     * 4 ya da 5 ses hattı varsa koro düzenine göre ad verir (porte numarası korunur), ör.
+     * "Soprano · 1. porte". Diğer sayılarda porte adları kalır.
+     */
+    fun choirNames(lines: List<VoiceLine>): List<VoiceLine> {
+        val names = when (lines.size) {
+            4 -> listOf("Soprano", "Alto", "Tenor", "Bas")
+            5 -> listOf("Soprano", "Mezzosoprano", "Alto", "Tenor", "Bas")
+            else -> return lines
+        }
+        return lines.mapIndexed { i, l -> l.copy(name = "${names[i]} · ${l.name}") }
     }
 }
