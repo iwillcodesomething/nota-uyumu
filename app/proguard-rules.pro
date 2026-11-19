@@ -1,1 +1,1 @@
-# ProGuard kuralları
+# Çekirdek modül yansıma kullanmaz; ek kural gerekmiyor.
