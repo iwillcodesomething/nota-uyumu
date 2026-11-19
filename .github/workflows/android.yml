@@ -49,6 +49,7 @@ jobs:
           echo "SIGNED=1" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true  # hesap artifact kotası dolabiliyor; asıl teslim GitHub sürümüdür
         with:
           name: NotaUyumu-apk
           path: |
@@ -56,7 +57,7 @@ jobs:
             NotaUyumu.apk
           if-no-files-found: warn
 
-      - name: GitHub sürümü
+      - name: GitHub sürümü (main)
         if: env.SIGNED == '1' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
@@ -64,3 +65,15 @@ jobs:
           name: Nota Uyumu 2.0.${{ github.run_number }}
           files: NotaUyumu.apk
           generate_release_notes: true
+
+      - name: Ön sürüm (deneme dalı)
+        if: env.SIGNED == '1' && github.ref == 'refs/heads/v2-sifirdan'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0.0-deneme.${{ github.run_number }}
+          name: Nota Uyumu 2 · deneme ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          files: NotaUyumu.apk
+          body: "v2-sifirdan dalından imzalı deneme sürümü. Telefona NotaUyumu.apk dosyasını indirip kurun."
+
