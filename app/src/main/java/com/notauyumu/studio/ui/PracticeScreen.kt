@@ -73,14 +73,14 @@ fun PracticeScreen(vm: AppViewModel) {
                 Text(s.line.name, style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
-                        vm.mode != Mode.SING -> "Dinliyorsun · ♩ = ${s.score.tempoBpm.roundToInt()}"
+                        vm.mode != Mode.SING -> "Dinliyorsun" + tempoText(s)
                         s.speakerMode -> "Hoparlör: kendi partin kapalı · kulaklık takarsan eşlik eder"
-                        else -> "Söylüyorsun · ♩ = ${s.score.tempoBpm.roundToInt()}"
+                        else -> "Söylüyorsun" + tempoText(s)
                     },
                     style = MaterialTheme.typography.labelMedium, color = Palette.Muted,
                 )
             }
-            FrameText(vm) { "Ölçü ${s.measureLabelAt(maxOf(s.now, s.from))}" }
+            FrameText(vm) { (if (s.score.fromRecording) "Bölüm " else "Ölçü ") + s.measureLabelAt(maxOf(s.now, s.from)) }
             Spacer(Modifier.width(16.dp))
         }
         FrameProgress(vm, s)
@@ -98,6 +98,8 @@ fun PracticeScreen(vm: AppViewModel) {
         }
     }
 }
+
+private fun tempoText(s: SessionView) = if (s.score.tempoBpm > 0) " · ♩ = ${s.score.tempoBpm.roundToInt()}" else ""
 
 @Composable
 private fun FrameText(vm: AppViewModel, text: () -> String) {

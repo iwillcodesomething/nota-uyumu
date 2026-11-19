@@ -87,11 +87,17 @@ fun PieceScreen(vm: AppViewModel) {
         ) {
             Text(score.title, style = MaterialTheme.typography.headlineSmall)
             val minutes = score.durationSec.roundToInt().let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" }
+            val rec = score.fromRecording
             Text(
-                listOfNotNull(score.composer, "${score.measures.size} ölçü", "♩ = ${score.tempoBpm.roundToInt()}", minutes).joinToString("  ·  "),
+                (if (rec) listOfNotNull(score.composer, "${score.measures.size} bölüm", minutes)
+                else listOfNotNull(score.composer, "${score.measures.size} ölçü", "♩ = ${score.tempoBpm.roundToInt()}", minutes)).joinToString("  ·  "),
                 style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
             )
 
+            if (rec) Text(
+                "Bu partiler ses kaydından otomatik çıkarıldı. Bazı notalar eksik ya da hatalı olabilir; şüphelendiğin yerde orijinal kaydı dinle.",
+                style = MaterialTheme.typography.bodyMedium, color = Palette.Muted,
+            )
             SectionLabel("Partini seç")
             score.lines.forEach { line ->
                 LineRow(line, selected = line.id == vm.lineId, best = vm.best(line.id)) { vm.selectLine(line.id) }
@@ -100,7 +106,7 @@ fun PieceScreen(vm: AppViewModel) {
             SectionLabel("Çalışma")
             SettingCard {
                 val bpm = (score.tempoBpm * p.tempoPercent / 100).roundToInt()
-                LabeledValue("Tempo", "%${p.tempoPercent}  ·  ♩ = $bpm")
+                LabeledValue("Tempo", if (rec) "%${p.tempoPercent}" else "%${p.tempoPercent}  ·  ♩ = $bpm")
                 Slider(
                     value = p.tempoPercent.toFloat(), onValueChange = { vm.updatePrefs(p.copy(tempoPercent = (it / 5).roundToInt() * 5)) },
                     valueRange = 40f..130f, steps = 17, colors = sliderColors(),
@@ -109,7 +115,7 @@ fun PieceScreen(vm: AppViewModel) {
                     val r = vm.range
                     val first = score.measures[r.first - 1].label
                     val last = score.measures[r.last - 1].label
-                    LabeledValue("Ölçüler", if (r.first == 1 && r.last == score.measures.size) "Tümü ($first–$last)" else "$first – $last")
+                    LabeledValue(if (rec) "Bölümler" else "Ölçüler", if (r.first == 1 && r.last == score.measures.size) "Tümü ($first–$last)" else "$first – $last")
                     RangeSlider(
                         value = r.first.toFloat()..r.last.toFloat(),
                         onValueChange = { vm.selectRange(it.start.roundToInt()..it.endInclusive.roundToInt()) },
@@ -138,7 +144,10 @@ fun PieceScreen(vm: AppViewModel) {
                 Slider(p.ownGain, { vm.updatePrefs(p.copy(ownGain = it)) }, colors = sliderColors())
                 LabeledValue("Diğer partiler", gainLabel(p.othersGain))
                 Slider(p.othersGain, { vm.updatePrefs(p.copy(othersGain = it)) }, colors = sliderColors())
-                SwitchRow("Metronom", p.metronome) { vm.updatePrefs(p.copy(metronome = it)) }
+                if (rec) {
+                    LabeledValue("Orijinal kayıt", if (p.tempoPercent != 100) "yalnız %100 tempoda" else gainLabel(p.backingGain))
+                    Slider(p.backingGain, { vm.updatePrefs(p.copy(backingGain = it)) }, colors = sliderColors(), enabled = p.tempoPercent == 100)
+                } else SwitchRow("Metronom", p.metronome) { vm.updatePrefs(p.copy(metronome = it)) }
                 SwitchRow("Oktav farkını hata sayma", p.forgiveOctave) { vm.updatePrefs(p.copy(forgiveOctave = it)) }
                 TextButton(onClick = { showAdvanced = !showAdvanced }) { Text(if (showAdvanced) "Gelişmiş ayarları gizle" else "Gelişmiş ayarlar", color = Palette.Muted) }
                 if (showAdvanced) {

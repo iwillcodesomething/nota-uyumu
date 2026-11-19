@@ -86,7 +86,7 @@ fun ResultScreen(vm: AppViewModel) {
 
             if (r.measures.isNotEmpty()) {
                 Column(Modifier.fillMaxWidth()) {
-                    SectionLabel("Ölçü ölçü")
+                    SectionLabel(if (piece.score.fromRecording) "Bölüm bölüm" else "Ölçü ölçü")
                     Spacer(Modifier.height(6.dp))
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         r.measures.forEach { m ->
@@ -103,7 +103,7 @@ fun ResultScreen(vm: AppViewModel) {
                         }
                     }
                     Spacer(Modifier.height(6.dp))
-                    Text("Bir ölçüye dokunarak yalnızca onu çalışabilirsin.", style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
+                    Text(if (piece.score.fromRecording) "Bir bölüme dokunarak yalnızca onu çalışabilirsin." else "Bir ölçüye dokunarak yalnızca onu çalışabilirsin.", style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
                 }
             }
 
@@ -111,7 +111,8 @@ fun ResultScreen(vm: AppViewModel) {
             if (weak.isNotEmpty()) {
                 val lo = weak.minOf { it.measureIndex }
                 val hi = weak.maxOf { it.measureIndex }
-                val label = if (lo == hi) "${weak.first().label}. ölçü" else "${piece.score.measures[lo - 1].label}–${piece.score.measures[hi - 1].label}. ölçüler"
+                val unit = if (piece.score.fromRecording) "bölüm" else "ölçü"
+                val label = if (lo == hi) "${weak.first().label}. $unit" else "${piece.score.measures[lo - 1].label}–${piece.score.measures[hi - 1].label}. ${unit}ler"
                 OutlinedButton(onClick = { vm.practiceMeasures(lo..hi) }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) {
                     Icon(Icons.Outlined.Repeat, null); Spacer(Modifier.width(8.dp)); Text("Zorlandığın yeri çalış: $label")
                 }
