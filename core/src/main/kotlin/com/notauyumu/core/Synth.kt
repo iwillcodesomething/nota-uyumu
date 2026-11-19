@@ -24,13 +24,18 @@ data class MixSettings(
     val countIn: Boolean = true,
     /** Ön sayım boyunca kendi partinin ilk notasını çal (kendi partin kısık/kapalıyken başlangıç perdesi için). */
     val startingPitch: Boolean = true,
+    /** Orijinal kaydın (varsa) ses düzeyi. */
+    val backingGain: Float = 0f,
 )
+
+/** Eserle aynı zaman çizgisindeki özgün ses kaydı (mono). */
+class BackingTrack(val samples: FloatArray, val sampleRate: Int)
 
 object ArrangementBuilder {
     fun build(score: Score, lineId: String, mix: MixSettings, fromSec: Double, untilSec: Double): Arrangement {
         val firstMeasure = score.measureAt(fromSec)
         val beatLen = firstMeasure?.beats?.let { b -> if (b.size >= 2) b[1] - b[0] else null }
-            ?: (60.0 / score.tempoBpm)
+            ?: (if (score.tempoBpm > 0) 60.0 / score.tempoBpm else 0.75)
         val beatsInBar = firstMeasure?.beats?.size?.coerceIn(2, 6) ?: 4
         val countIn = if (mix.countIn) beatLen * beatsInBar else 0.0
         val offset = fromSec - countIn // oynatma t=0 anı eserde bu saniyeye denk gelir
@@ -72,7 +77,15 @@ object ArrangementBuilder {
  * (temel + birkaç harmonik); vibrato yok ki referans perde net olsun.
  * Tek iş parçacığından çağrılmalıdır.
  */
-class SynthRenderer(private val sampleRate: Int, private val arrangement: Arrangement, private val mix: MixSettings) {
+class SynthRenderer(
+    private val sampleRate: Int,
+    private val arrangement: Arrangement,
+    private val mix: MixSettings,
+    private val backing: BackingTrack? = null,
+    /** Kayıt yalnızca bu eser aralığında çalınır. */
+    private val backingFrom: Double = 0.0,
+    private val backingUntil: Double = Double.MAX_VALUE,
+) {
     private class Voice(val ev: SynthEvent, val startFrame: Long, val endFrame: Long, val freq: Double, val gain: Float) {
         var phase = 0.0
     }
@@ -128,6 +141,17 @@ class SynthRenderer(private val sampleRate: Int, private val arrangement: Arrang
                 if (v.phase > 2 * PI * 1000) v.phase -= 2 * PI * 1000
             }
             if (stopFrame <= blockEnd) it.remove()
+        }
+        if (backing != null && mix.backingGain > 0f) {
+            for (i in 0 until n) {
+                val scoreT = (framePosition + i).toDouble() / sampleRate + arrangement.scoreOffsetSec
+                if (scoreT < backingFrom || scoreT >= backingUntil) continue
+                val pos = scoreT * backing.sampleRate
+                val k = pos.toInt()
+                if (k < 0 || k + 1 >= backing.samples.size) continue
+                val frac = (pos - k).toFloat()
+                out[i] += (backing.samples[k] * (1 - frac) + backing.samples[k + 1] * frac) * mix.backingGain
+            }
         }
         for (i in 0 until n) out[i] = tanh(out[i].toDouble()).toFloat()
         framePosition = blockEnd

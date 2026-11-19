@@ -11,7 +11,10 @@ data class Score(
     val composer: String?,
     val lines: List<VoiceLine>,
     val measures: List<Measure>,
+    /** 0 ise bilinmiyor (ses kaydından çıkarılmış eser). */
     val tempoBpm: Double,
+    /** Notadan değil ses kaydından çıkarıldıysa tempo/ölçü yoktur; ölçüler yaklaşık "bölüm"lerdir. */
+    val fromRecording: Boolean = false,
 ) {
     val durationSec: Double get() = measures.lastOrNull()?.endSec ?: 0.0
 

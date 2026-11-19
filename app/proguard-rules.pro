@@ -1,1 +1,2 @@
-# Çekirdek modül yansıma kullanmaz; ek kural gerekmiyor.
+# ONNX Runtime yerel kod üzerinden yansıma ile sınıflara erişir.
+-keep class ai.onnxruntime.** { *; }
