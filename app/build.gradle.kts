@@ -17,7 +17,12 @@ android {
         versionCode = 220
         versionName = "2.2.0"
         // Yalnızca telefon işlemcileri (ONNX Runtime yerel kitaplıkları APK boyutunu büyütür)
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // Emülatör testleri için (-Pemulator)
+            if (project.hasProperty("emulator")) abiFilters += "x86_64"
+        }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // İmza bilgileri ortam değişkenlerinden okunur (CI gizli anahtarları). Yoksa release imzasız üretilir.
@@ -39,6 +44,8 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfigs.findByName("release")?.let { signingConfig = it }
+            // Emülatörde release (R8) duman testi için hata ayıklama anahtarıyla imzala
+            if (project.hasProperty("emulator") && signingConfigs.findByName("release") == null) signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -75,4 +82,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }
