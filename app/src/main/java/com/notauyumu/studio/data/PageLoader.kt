@@ -34,7 +34,22 @@ object PageLoader {
         }
     }
 
-    fun pdfPages(context: Context, uri: Uri, progress: (Float) -> Unit = {}): List<GrayImage> {
+    /**
+     * Bulut sağlayıcılarından (Drive, WhatsApp, e-posta eki…) gelen dosyalar çoğu zaman aranabilir
+     * (seekable) değildir; PdfRenderer ve MediaExtractor bunları açamaz. Önce önbelleğe kopyalanır.
+     */
+    fun localCopy(context: Context, uri: Uri, name: String): Uri {
+        if (uri.scheme == "file") return uri
+        val dir = java.io.File(context.cacheDir, "import").apply { mkdirs() }
+        val f = java.io.File(dir, name)
+        val input = try { context.contentResolver.openInputStream(uri) } catch (e: Exception) { null }
+            ?: throw ScoreFormatException("Dosya açılamadı.")
+        input.use { i -> f.outputStream().use { i.copyTo(it, 1 shl 16) } }
+        return Uri.fromFile(f)
+    }
+
+    fun pdfPages(context: Context, uri0: Uri, progress: (Float) -> Unit = {}): List<GrayImage> {
+        val uri = localCopy(context, uri0, "import.pdf")
         val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: throw ScoreFormatException("PDF açılamadı.")
         return pfd.use { fd ->
             val renderer = try { PdfRenderer(fd) } catch (e: Exception) { throw ScoreFormatException("PDF açılamadı; dosya şifreli ya da bozuk olabilir.") }

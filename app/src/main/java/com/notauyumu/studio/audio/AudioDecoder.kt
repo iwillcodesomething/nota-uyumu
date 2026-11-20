@@ -15,10 +15,11 @@ object AudioDecoder {
     const val TARGET_RATE = 22050
     private const val MAX_SECONDS = 12 * 60
 
-    fun decode(context: Context, uri: Uri, progress: (Float) -> Unit = {}): FloatArray {
+    fun decode(context: Context, uri0: Uri, progress: (Float) -> Unit = {}): FloatArray {
+        val uri = com.notauyumu.studio.data.PageLoader.localCopy(context, uri0, "import.audio")
         val ex = MediaExtractor()
         try {
-            ex.setDataSource(context, uri, null)
+            ex.setDataSource(uri.path!!)
         } catch (e: Exception) {
             throw ScoreFormatException("Ses dosyası açılamadı.")
         }
