@@ -157,9 +157,13 @@ class Library(private val context: Context) {
         val match = ScoreAligner.alignAnyKey(score, act)
             ?: throw ScoreFormatException("Kayıt bu notayla eşleştirilemedi: kayıtta müzik bulunamadı ya da kayıt notadan çok daha uzun.")
         val al = match.alignment
-        if (al.cost > 0.22) throw ScoreFormatException("Bu kayıt seçili notaya benzemiyor (uyumsuzluk %${(al.cost * 100).roundToInt()}). Doğru eseri ve kaydı seçtiğinden emin ol.")
+        if (al.cost > 0.28) throw ScoreFormatException("Bu kayıt seçili notaya benzemiyor (uyumsuzluk %${(al.cost * 100).roundToInt()}). Doğru eseri ve kaydı seçtiğinden emin ol.")
         val retimed = ScoreAligner.retime(ScoreAligner.transpose(score, match.semitones), al)
         if (retimed.measures.size < 2) throw ScoreFormatException("Kayıt notanın çok kısa bir bölümüne denk geliyor.")
+        // Tekrarlar doğaldır, ama dakikada 6'dan fazla sıçrama kaydın bu notaya ait olmadığını gösterir
+        val jumps = retimed.measures.map { it.label.toIntOrNull() }.zipWithNext().count { (a, b) -> a != null && b != null && b != a + 1 }
+        val minutes = (retimed.measures.last().endSec - retimed.measures.first().startSec) / 60
+        if (minutes > 0 && jumps / minutes > 6) throw ScoreFormatException("Bu kayıt seçili notaya benzemiyor. Doğru eseri ve kaydı seçtiğinden emin ol.")
         progress(0.96f, "Partiler kayıtla karşılaştırılıyor")
         val (fixed, fixes) = ScoreAligner.correct(retimed, act)
         val agree = ScoreAligner.agreement(fixed, act)

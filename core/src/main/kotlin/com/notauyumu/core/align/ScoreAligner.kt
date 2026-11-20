@@ -27,7 +27,13 @@ object ScoreAligner {
     const val STEP = 0.1
 
     /** Eşleşme: [scoreSec] ↔ [recSec] çiftleri, ikisi de artan. */
-    class Alignment(val scoreSec: DoubleArray, val recSec: DoubleArray, val cost: Double) {
+    /** Notadaki bir ölçünün kayıtta söylendiği bir geçiş (tekrarlarda aynı ölçü birden çok kez geçer). */
+    class Visit(val measure: Int, val recStart: Double, val recEnd: Double)
+
+    class Alignment(val scoreSec: DoubleArray, val recSec: DoubleArray, val cost: Double, val visits: List<Visit>? = null, val pathJumped: Boolean = false) {
+        /** Kayıt notada geri ya da ileri atladı mı (tekrar, D.S., 1./2. bitiş)? */
+        val hasJumps: Boolean get() = visits != null && visits.zipWithNext().any { (a, b) -> b.measure != a.measure + 1 }
+
         val scoreStart get() = scoreSec.first()
         val scoreEnd get() = scoreSec.last()
         val recStart get() = recSec.first()
@@ -96,7 +102,22 @@ object ScoreAligner {
      * kalanın tamamı notanın bitişik bir bölümüne eşlenir. Eşleşme yoksa null.
      */
     fun align(score: Score, act: BasicPitch.Activations, time: (Int) -> Double = BasicPitch::frameToTime): Alignment? =
-        align(scoreChroma(score), recordingChroma(act, time))
+        align(scoreChroma(score), recordingChroma(act, time), MeasureFrames.of(score, 1))
+
+    /** Ölçü başlangıç/bitiş dilimleri (tekrar sıçramaları yalnızca ölçü sınırlarında yapılır). */
+    class MeasureFrames(val starts: IntArray, val ends: IntArray) {
+        companion object {
+            fun of(score: Score, pool: Int): MeasureFrames? {
+                if (score.measures.size < 2) return null
+                val st = score.measures.map { (it.startSec / STEP / pool).roundToInt() }
+                val en = score.measures.map { maxOf((it.endSec / STEP / pool).roundToInt() - 1, 0) }
+                return MeasureFrames(st.toIntArray(), en.zip(st).map { (e, b) -> maxOf(e, b) }.toIntArray())
+            }
+        }
+    }
+
+    /** Tekrar sıçraması cezası (ortalama uyumsuzluk birimiyle, ≈ birkaç saniyelik kötü eşleşme). */
+    @JvmStatic var jumpPenalty = 5.0f
 
     /** Eşleşme ve kaydın notaya göre aktarımı (yarım ses; kayıt notadan [semitones] yüksek). */
     class Match(val alignment: Alignment, val semitones: Int)
@@ -115,10 +136,10 @@ object ScoreAligner {
         val recC = pool(rec, 4)
         var bestK = 0; var bestCost = Double.MAX_VALUE
         for (k in -6..5) {
-            val c = align(scC, rotate(recC, -k))?.cost ?: continue
+            val c = align(scC, rotate(recC, -k), MeasureFrames.of(score, 4))?.cost ?: continue
             if (c < bestCost) { bestCost = c; bestK = k }
         }
-        val al = align(sc, rotate(rec, -bestK)) ?: return null
+        val al = align(sc, rotate(rec, -bestK), MeasureFrames.of(score, 1)) ?: return null
         return Match(al, bestK)
     }
 
@@ -129,7 +150,7 @@ object ScoreAligner {
     fun transpose(score: Score, semitones: Int): Score =
         if (semitones == 0) score else score.copy(lines = score.lines.map { l -> l.copy(notes = l.notes.map { it.copy(midi = it.midi + semitones) }) })
 
-    fun align(sc: Array<DoubleArray>, rawRec: Array<DoubleArray>): Alignment? {
+    fun align(sc: Array<DoubleArray>, rawRec: Array<DoubleArray>, mf: MeasureFrames? = null): Alignment? {
         if (sc.isEmpty() || rawRec.isEmpty()) return null
         val en = rawRec.map(::energy)
         val loud = en.sorted()[(en.size * 0.9).toInt().coerceAtMost(en.size - 1)]
@@ -154,8 +175,13 @@ object ScoreAligner {
         var prev2 = FloatArray(m) { inf }
         var prev = FloatArray(m) { cost(0, it) } // serbest başlangıç
         val back = Array(n) { ByteArray(m) }
+        val jumpFrom = IntArray(n) { -1 }
+        val isStart = BooleanArray(m).also { a -> mf?.starts?.forEach { if (it in 0 until m) a[it] = true } }
         for (i in 1 until n) {
             val cur = FloatArray(m) { inf }
+            // Tekrar: önceki dilimde herhangi bir ölçünün sonundaysa herhangi bir ölçünün başına sıçrayabilir
+            var jumpBase = inf
+            if (mf != null) for (e in mf.ends) if (e in 0 until m && prev[e] + jumpPenalty < jumpBase) { jumpBase = prev[e] + jumpPenalty; jumpFrom[i] = e }
             for (j in 0 until m) {
                 // Her kayıt dilimi tam bir kez ücretlendirilir → toplam/n = ortalama uyumsuzluk
                 val c = cost(i, j)
@@ -163,6 +189,7 @@ object ScoreAligner {
                 if (j >= 1 && prev[j - 1] + c < best) { best = prev[j - 1] + c; dir = 1 }
                 if (j >= 2) { val v = prev[j - 2] + (c + cost(i, j - 1)) / 2; if (v < best) { best = v; dir = 2 } }
                 if (i >= 2 && j >= 1) { val v = prev2[j - 1] + c + cost(i - 1, j); if (v < best) { best = v; dir = 3 } }
+                if (isStart[j] && jumpBase + c < best && jumpFrom[i] != j - 1) { best = jumpBase + c; dir = 4 }
                 cur[j] = best; back[i][j] = dir
             }
             prev2 = prev; prev = cur
@@ -181,10 +208,16 @@ object ScoreAligner {
                 1 -> { i -= 1; j -= 1 }
                 2 -> { i -= 1; j -= 2 }
                 3 -> { pr += i - 1; ps += j; i -= 2; j -= 1 }
+                4 -> { j = jumpFrom[i]; i -= 1 }
                 else -> break
             }
         }
         ps.reverse(); pr.reverse()
+        val visits = if (mf != null) visits(ps, pr, first, mf) else null
+        if (visits != null && (1 until ps.size).any { ps[it] < ps[it - 1] || ps[it] - ps[it - 1] > 2 }) {
+            // Sıçramalı yol (tekrar ya da notada olmayan giriş): zaman eşlemesi ölçü geçişlerinden kurulur
+            return Alignment(doubleArrayOf(0.0), doubleArrayOf(0.0), total / n, visits, pathJumped = true)
+        }
         // Aynı nota diliminin birden çok kayıt dilimine eşlendiği yerlerde ortalama al → kesin artan dizi
         val sOut = ArrayList<Double>(); val rOut = ArrayList<Double>()
         var k = 0
@@ -196,7 +229,47 @@ object ScoreAligner {
             k = e
         }
         smooth(rOut)
-        return Alignment(sOut.toDoubleArray(), rOut.toDoubleArray(), total / n)
+        return Alignment(sOut.toDoubleArray(), rOut.toDoubleArray(), total / n, visits)
+    }
+
+    /**
+     * DTW yolunu ölçü geçişlerine çevirir. Her geçişte ölçünün başı ve sonu, yolun o ölçüdeki
+     * noktalarından (yerel tempo ile) dışa doğru kestirilir; kaydın ortasından başladığı/bittiği
+     * yarım ölçüler atılır.
+     */
+    private fun visits(ps: List<Int>, pr: List<Int>, first: Int, mf: MeasureFrames): List<Visit> {
+        fun measureOf(j: Int): Int { val k = mf.starts.binarySearch(j); return if (k >= 0) k else (-k - 2).coerceAtLeast(0) }
+        class G(val m: Int, val s: ArrayList<Double> = ArrayList(), val r: ArrayList<Double> = ArrayList())
+        val groups = ArrayList<G>()
+        for (k in ps.indices) {
+            val mi = measureOf(ps[k])
+            val back = k > 0 && ps[k] < ps[k - 1]
+            if (groups.isEmpty() || groups.last().m != mi || back) groups += G(mi)
+            groups.last().s += ps[k] * STEP; groups.last().r += (first + pr[k]) * STEP + STEP / 2
+        }
+        // Genel oran (kayıt sn / nota sn), kısa geçişler için
+        val spans = groups.filter { it.s.last() > it.s.first() }
+        val globalRate = (spans.sumOf { it.r.last() - it.r.first() } / spans.sumOf { it.s.last() - it.s.first() }.coerceAtLeast(1e-6)).takeIf { it.isFinite() && it > 0 } ?: 1.0
+        val raw = groups.map { g ->
+            val ms = mf.starts[g.m] * STEP; val me = (mf.ends[g.m] + 1) * STEP
+            val ds = g.s.last() - g.s.first()
+            val rate = if (ds > 2 * STEP) ((g.r.last() - g.r.first()) / ds).coerceIn(0.4, 2.5) else globalRate
+            val cover = (ds + STEP) / (me - ms).coerceAtLeast(STEP)
+            Triple(g.m, g.r.first() - (g.s.first() - ms) * rate, g.r.last() + (me - g.s.last() - STEP) * rate) to cover
+        }.toMutableList()
+        if (raw.size > 1 && raw.first().second < 0.5) raw.removeAt(0)
+        if (raw.size > 1 && raw.last().second < 0.5) raw.removeAt(raw.size - 1)
+        // Kaydın notada olmayan bir girişle (çalgı girişi vb.) başladığı durumda yol, girişi notanın
+        // rastgele 1–2 ölçüsüne bağlayıp oradan asıl başlangıca sıçrar: bu kısa öncü bölüm atılır.
+        val firstJump = (0 until raw.size - 1).firstOrNull { raw[it + 1].first.first != raw[it].first.first + 1 }
+        if (firstJump != null && firstJump <= 1 && raw.size > 4) repeat(firstJump + 1) { raw.removeAt(0) }
+        val out = raw.map { it.first }.map { Triple(it.first, it.second, it.third) }.toMutableList()
+        // Komşu geçişlerin sınırlarını birleştir
+        for (k in 0 until out.size - 1) {
+            val mid = (out[k].third + out[k + 1].second) / 2
+            out[k] = Triple(out[k].first, out[k].second, mid); out[k + 1] = Triple(out[k + 1].first, mid, out[k + 1].third)
+        }
+        return out.map { Visit(it.first, maxOf(0.0, it.second), maxOf(it.second + 0.05, it.third)) }.filter { it.recEnd > it.recStart }
     }
 
     /** DTW yolundaki basamakları yumuşatır (5 noktalı kayan ortalama, artanlık korunur). */
@@ -214,6 +287,7 @@ object ScoreAligner {
      * eşleşmeden okunur, ölçü içindeki notalar doğrusal yerleştirilir (ritim notadan gelir).
      */
     fun retime(score: Score, al: Alignment): Score {
+        if (al.pathJumped) return retimeVisits(score, al.visits!!)
         val margin = 0.25
         val keep = score.measures.filter { it.endSec > al.scoreStart + margin && it.startSec < al.scoreEnd - margin }
         if (keep.isEmpty()) return score.copy(lines = score.lines.map { it.copy(notes = emptyList()) }, measures = emptyList(), fromRecording = true)
@@ -235,6 +309,31 @@ object ScoreAligner {
                 val s = map(n.startSec); val e = map(min(n.startSec + n.durationSec, t1))
                 n.copy(startSec = s, durationSec = max(0.05, e - s), measureIndex = n.measureIndex - first + 1)
             })
+        }
+        return score.copy(lines = lines, measures = measures, fromRecording = true)
+    }
+
+    /** Tekrarlı kayıt: ölçüler kayıttaki sırasıyla (tekrarlar açılmış olarak) dizilir. */
+    private fun retimeVisits(score: Score, visits: List<Visit>): Score {
+        val ms = score.measures
+        val measures = visits.mapIndexed { k, v ->
+            val m = ms[v.measure]
+            val f = { t: Double -> v.recStart + (t - m.startSec) / (m.endSec - m.startSec).coerceAtLeast(1e-6) * (v.recEnd - v.recStart) }
+            Measure(k + 1, m.label, v.recStart, v.recEnd, m.beats.map(f))
+        }
+        val lines = score.lines.map { l ->
+            val notes = ArrayList<Note>()
+            visits.forEachIndexed { k, v ->
+                val m = ms[v.measure]
+                val scale = (v.recEnd - v.recStart) / (m.endSec - m.startSec).coerceAtLeast(1e-6)
+                for (n in l.notes) {
+                    if (n.startSec < m.startSec - 1e-6 || n.startSec >= m.endSec - 1e-6) continue
+                    val s = v.recStart + (n.startSec - m.startSec) * scale
+                    val e = v.recStart + (min(n.startSec + n.durationSec, m.endSec) - m.startSec) * scale
+                    notes += n.copy(startSec = s, durationSec = max(0.05, e - s), measureIndex = k + 1)
+                }
+            }
+            l.copy(notes = notes)
         }
         return score.copy(lines = lines, measures = measures, fromRecording = true)
     }
@@ -313,6 +412,11 @@ object ScoreAligner {
     }
 
     /** Ölçü aralığı etiketi, ör. "ölçü 8–77". */
-    fun rangeLabel(retimed: Score): String =
-        if (retimed.measures.isEmpty()) "" else "ölçü ${retimed.measures.first().label}–${retimed.measures.last().label}"
+    fun rangeLabel(retimed: Score): String {
+        if (retimed.measures.isEmpty()) return ""
+        val labels = retimed.measures.map { it.label.toIntOrNull() }
+        val repeats = labels.zipWithNext().count { (a, b) -> a != null && b != null && b <= a }
+        val base = "ölçü ${retimed.measures.first().label}–${retimed.measures.last().label}"
+        return if (repeats > 0) "${retimed.measures.size} ölçü, $repeats tekrar/dönüşle" else base
+    }
 }

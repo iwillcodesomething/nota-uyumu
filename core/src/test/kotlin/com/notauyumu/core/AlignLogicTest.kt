@@ -134,6 +134,39 @@ class AlignLogicTest {
     }
 
     @Test
+    fun align_followsRepeatsAndDalSegno() {
+        val score = chorale(measures = 16, seed = 21)
+        // Söylenen sıra: 1–8 (tekrar), 1–6 (1. bitiş atlanır), 9–12, D.S. 5–8, 13–16
+        val order = (1..8) + (1..6) + (9..12) + (5..8) + (13..16)
+        val beat = 60.0 / score.tempoBpm
+        val mlen = 4 * beat
+        // Sırayı açarak "performans" notası kur; kayıt bunun 1.2 kat hızlısı, başta 1 sn sessizlik
+        val perf = score.copy(
+            lines = score.lines.map { l -> l.copy(notes = order.flatMapIndexed { k, m ->
+                l.notes.filter { it.measureIndex == m }.map { it.copy(startSec = it.startSec - (m - 1) * mlen + k * mlen) } }) },
+            measures = order.mapIndexed { k, m -> Measure(k + 1, "$m", k * mlen, (k + 1) * mlen, emptyList()) },
+        )
+        val w = Warp(0.0, lead = 1.0)
+        val act = paintRecording(perf, w)
+        val al = ScoreAligner.align(score, act, time)!!
+        assertTrue("tekrar bulunamadı", al.hasJumps)
+        val re = ScoreAligner.retime(score, al)
+        val got = re.measures.map { it.label.toInt() }
+        // Sıra büyük ölçüde doğru olmalı (en uçtaki bir ölçü kaçabilir)
+        var lcs = Array(got.size + 1) { IntArray(order.size + 1) }
+        for (i in 1..got.size) for (j in 1..order.size) lcs[i][j] = if (got[i - 1] == order[j - 1]) lcs[i - 1][j - 1] + 1 else maxOf(lcs[i - 1][j], lcs[i][j - 1])
+        assertTrue("sıra $got", lcs[got.size][order.size] >= order.size - 2 && got.size <= order.size + 1)
+        // Ölçü başlangıçları kayıttaki gerçek zamana yakın
+        val errs = re.measures.mapNotNull { m ->
+            val k = order.indices.minByOrNull { abs(w.rec(it * mlen) - m.startSec) }!!
+            if (order[k] == m.label.toInt()) abs(w.rec(k * mlen) - m.startSec) else null
+        }.sorted()
+        assertTrue("ölçü başı hatası ${errs[errs.size / 2]}", errs[errs.size / 2] < 0.15)
+        assertTrue(ScoreAligner.agreement(re, act, time).values.all { it > 0.8 })
+        assertTrue(ScoreAligner.rangeLabel(re).contains("tekrar"))
+    }
+
+    @Test
     fun align_rejectsSilence() {
         val score = chorale(measures = 4)
         val n = 2000

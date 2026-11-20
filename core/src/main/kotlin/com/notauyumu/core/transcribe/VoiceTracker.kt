@@ -51,15 +51,42 @@ object VoiceTracker {
     }
 
     /**
-     * Kayıtta aynı anda en çok kaç sesin duyulduğunu tahmin eder (2..6): ses olan
-     * karelerdeki eşzamanlı perde sayısının %90'lık dilimi.
+     * Ses sayısını tahmin eder: 2'den 6'ya kadar her sayı için sesler izlenir; seslerin söylediği
+     * perdelerin ortalama olarak yarıya yakını "şüpheli" (kayıtta zayıf, başka bir sesle aynı ya da başka
+     * bir sesin üst harmoniği) olmaya başladığı sayıdan bir öncesi seçilir. Eşzamanlı perde saymak sentez
+     * ve org benzeri seslerde harmonikleri de ses sanıyordu (4 sesli koral için 6 çıkıyordu).
      */
     fun estimateVoices(act: BasicPitch.Activations, tuning: Tuning = Tuning()): Int {
-        val counts = ArrayList<Int>()
-        for (t in 0 until act.nFrames step 4) { val c = candidates(act.note[t], tuning.threshold + 0.05f).size; if (c > 0) counts += c }
-        if (counts.isEmpty()) return 4
-        counts.sort()
-        return counts[(counts.size * 0.9).toInt().coerceAtMost(counts.size - 1)].coerceIn(2, 6)
+        var best = 2
+        for (k in 2..6) {
+            val d = dubious(act, track(act, k, tuning))
+            if (d.average() > MAX_DUBIOUS) break
+            best = k
+        }
+        return best
+    }
+
+    private const val MAX_DUBIOUS = 0.48
+
+    /** Her ses için şüpheli perde oranı (zayıf < 0.2, başka sesle aynı ya da daha güçlü bir alt sesin 12/19/24 yarım ses üstü). */
+    fun dubious(act: BasicPitch.Activations, tr: Array<IntArray>): DoubleArray = DoubleArray(tr.size) { v ->
+        var on = 0; var bad = 0
+        for (t in 0 until act.nFrames step 2) {
+            val p = tr[v][t]
+            if (p <= 0) continue
+            on++
+            val a = act.note[t][p - BasicPitch.MIDI_OFFSET]
+            var flag = a < 0.2f
+            if (!flag) for (u in tr.indices) {
+                if (u == v) continue
+                val q = tr[u][t]
+                if (q <= 0) continue
+                val d = p - q
+                if (d == 0 || ((d == 12 || d == 19 || d == 24) && act.note[t][q - BasicPitch.MIDI_OFFSET] >= a)) { flag = true; break }
+            }
+            if (flag) bad++
+        }
+        if (on == 0) 1.0 else bad.toDouble() / on
     }
 
     /** Her ses için kare başına MIDI perdesi (-1 = sessiz). [voices] adet, 0 = en üst ses. */

@@ -84,15 +84,15 @@ class UcuncuUcTest {
 
     @Test fun t03_calismaSesiCalar() {
         val s = demo()
-        val mix = MixSettings()
-        val arr = ArrangementBuilder.build(s, s.lines[0].id, mix, 0.0, minOf(6.0, s.durationSec))
+        val mix = MixSettings(countIn = false)
+        val arr = ArrangementBuilder.build(s, s.lines[0].id, mix, 0.0, minOf(8.0, s.durationSec))
         val e = PracticeEngine(arr, mix, listenToMic = false, latencySec = 0.0)
-        e.start(); Thread.sleep(2500)
+        e.start(); Thread.sleep(3000)
         val t = e.scoreTimeSec()
         e.stop()
-        log("çalma: 2.5 sn sonra eser zamanı $t, hata=${e.failure}")
+        log("çalma: 3 sn sonra eser zamanı $t, hata=${e.failure}")
         assertEquals(null, e.failure)
-        assertTrue("çalma ilerlemedi ($t)", t > 0.5)
+        assertTrue("çalma ilerlemedi ($t)", t > 1.5)
     }
 
     @Test fun t04_fotograftanOkur() {
@@ -128,7 +128,7 @@ class UcuncuUcTest {
         val e = timed("tutti kayıt (otomatik ses sayısı)") { lib.importRecording(Uri.fromFile(f), Library.RecordingKind.TUTTI, 0) { _, _ -> } }
         val r = lib.load(e.id)
         log("tutti: ${r.lines.size} parti: " + r.lines.joinToString { "${it.name}=${it.notes.size}" })
-        assertTrue(r.lines.size >= 3)
+        assertEquals("otomatik ses sayısı", 4, r.lines.size)
     }
 
     @Test fun t07_tekPartiKayit() {
