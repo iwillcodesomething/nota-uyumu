@@ -12,7 +12,37 @@ data class ScoringSettings(
     val toleranceCents: Double = 35.0,
     /** Oktav farkını hata sayma. */
     val forgiveOctave: Boolean = true,
+    /**
+     * Bir notanın bu kadarı sesliyse sessiz anlar (ünsüzler, nefes, perde ölçülemeyen kısa anlar) hata
+     * sayılmaz; puan yalnızca sesli ölçümlerden hesaplanır. Daha azı sesliyse eksik kısım hata sayılır.
+     */
+    val minVoiced: Double = 0.6,
+    /**
+     * Akort kaymasını affet: koro (özellikle eşliksiz) genel tonu yavaşça yükseltip alçaltabilir; şarkıcı
+     * kendi içinde doğru aralıklarla söylüyorsa bu, her notada hata sayılmaz. Son birkaç saniyedeki ortalama
+     * sapma (en fazla [maxTuningCents]) referans alınır; genel eğilim ayrıca raporlanır.
+     */
+    val adaptTuning: Boolean = true,
+    val maxTuningCents: Double = 45.0,
 )
+
+/**
+ * Şarkıcının o anki akort kaymasını izler: hedefe yakın (±60 cent; tam yarım ses yanlışlar sayılmaz) sesli ölçümlerin son [windowSec]
+ * saniyedeki medyanı, ±[maxCents] ile sınırlı.
+ */
+class TuningTracker(private val windowSec: Double = 6.0, private val maxCents: Double = 45.0) {
+    private val buf = ArrayDeque<Pair<Double, Double>>()
+    fun push(timeSec: Double, cents: Double) {
+        if (kotlin.math.abs(cents) > 60) return
+        buf.addLast(timeSec to cents)
+        while (buf.isNotEmpty() && buf.first().first < timeSec - windowSec) buf.removeFirst()
+    }
+    fun offset(): Double {
+        if (buf.size < 15) return 0.0
+        val s = buf.map { it.second }.sorted()
+        return s[s.size / 2].coerceIn(-maxCents, maxCents)
+    }
+}
 
 data class NoteResult(
     val note: Note,
@@ -42,10 +72,10 @@ data class PerformanceReport(
 object Scorer {
 
     /** Bir anlık ölçümü hedefe göre derecelendirir (canlı renklendirme için). */
-    fun grade(sungMidi: Double?, targets: List<Int>, s: ScoringSettings): Grade {
+    fun grade(sungMidi: Double?, targets: List<Int>, s: ScoringSettings, tuningCents: Double = 0.0): Grade {
         if (sungMidi == null) return Grade.SILENT
         if (targets.isEmpty()) return Grade.SILENT
-        val err = targets.minOf { abs(Pitch.centsOff(sungMidi, it, s.forgiveOctave)) }
+        val err = targets.minOf { abs(Pitch.centsOff(sungMidi, it, s.forgiveOctave) - tuningCents) }
         return when {
             err <= s.toleranceCents -> Grade.HIT
             err <= s.toleranceCents * 2 -> Grade.NEAR
@@ -78,6 +108,33 @@ object Scorer {
         var totalWeight = 0.0; var weighted = 0.0
         var totalWindow = 0; var totalVoiced = 0
 
+        // Akort kayması: her ölçüm için çevresindeki ±6 sn'deki hedefe göre medyan sapma
+        val offsetAt: (Double) -> Double = if (!s.adaptTuning) { _ -> 0.0 } else {
+            val devs = ArrayList<Pair<Double, Double>>()
+            for (p in samples) {
+                val m = p.midi ?: continue
+                val tg = targetsAt(line, p.timeSec)
+                if (tg.isEmpty()) continue
+                val best = tg.map { Pitch.centsOff(m, it.midi, s.forgiveOctave) }.minBy { abs(it) }
+                if (abs(best) <= 60) devs += p.timeSec to best
+            }
+            val times = devs.map { it.first }.toDoubleArray()
+            val cache = HashMap<Long, Double>()
+            fun off(t: Double): Double {
+                val key = (t * 2).toLong() // yarım saniyelik çözünürlük
+                return cache.getOrPut(key) {
+                    val c = key / 2.0
+                    val lo = times.binarySearch(c - 6.0).let { if (it < 0) -it - 1 else it }
+                    val hi = times.binarySearch(c + 6.0).let { if (it < 0) -it - 1 else it }
+                    if (hi - lo < 15) 0.0 else {
+                        val v = DoubleArray(hi - lo) { devs[lo + it].second }; v.sort()
+                        v[v.size / 2].coerceIn(-s.maxTuningCents, s.maxTuningCents)
+                    }
+                }
+            }
+            ::off
+        }
+
         for (group in groups) {
             val ref = group.first()
             // Atak payı: notanın ilk %20'si (en fazla 120 ms) ve son 40 ms değerlendirilmez.
@@ -93,9 +150,9 @@ object Scorer {
                 val nearest = group.minBy { abs(Pitch.centsOff(m, it.midi, s.forgiveOctave)) }
                 val c = Pitch.centsOff(m, nearest.midi, s.forgiveOctave)
                 signed += c
-                if (abs(c) <= s.toleranceCents) hits++
+                if (abs(c - offsetAt(p.timeSec)) <= s.toleranceCents) hits++
             }
-            val acc = hits.toDouble() / window.size
+            val acc = hits.toDouble() / maxOf(voiced.toDouble(), s.minVoiced * window.size, 1.0)
             val mean = if (voiced > 0) signed / voiced else null
             allSigned += signed; allSignedN += voiced
             totalWindow += window.size; totalVoiced += voiced

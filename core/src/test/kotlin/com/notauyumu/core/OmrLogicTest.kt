@@ -127,4 +127,37 @@ class OmrLogicTest {
         assertEquals(61, top.notes.first().midi) // Do♯4 (6/8, 4 diyez)
         assertTrue(s.lines.size >= 2)
     }
+
+    private fun staff(clef: String, vararg notes: String) =
+        listOf(sym(clef), sym("timeSignature/4")) + notes.flatMap { n -> if (n == "|") listOf(sym("barline")) else listOf(sym("note_4", n, "_")) } + sym("barline")
+
+    @Test
+    fun builder_fixesMisreadClefFromOtherSystems() {
+        val good = listOf(
+            staff("clef_G2", "E5", "D5", "C5", "B4"), staff("clef_G2", "C5", "B4", "A4", "G4"),
+            staff("clef_G2_8vb", "G4", "G4", "E4", "D4"), staff("clef_F4", "C3", "G2", "A2", "E2"),
+        )
+        // 2. sistemde sopranonun anahtarı fa okunmuş: porte üzerindeki yerler aynı, adlar 12 basamak aşağı
+        val misread = listOf(staff("clef_F4", "G3", "F3", "E3", "D3")) + good.drop(1)
+        val s = OmrScoreBuilder.build("T", listOf(good, misread, good), bpm = 60.0)
+        assertEquals(listOf("Soprano · 1. porte", "Alto · 2. porte", "Tenor · 3. porte", "Bas · 4. porte"), s.lines.map { it.name })
+        val sop = s.lines[0].notes.map { Pitch.letter(it.midi) }
+        assertEquals(listOf("E5", "D5", "C5", "B4"), sop.subList(4, 8))
+    }
+
+    @Test
+    fun builder_mapsPianoOnlySystemsToPianoAndNamesIt() {
+        val pianoR = staff("clef_G2", "C5", "E5", "G5", "C6").let { st -> st.flatMap { if (it.rhythm == "note_4") listOf(it, sym("chord"), OmrSymbol("note_4", "C4", "_", "upper")) else listOf(it) } }
+        val pianoL = staff("clef_F4", "C3", "G2", "C3", "G2")
+        val choir = listOf(
+            staff("clef_G2", "E5", "D5", "C5", "B4"), staff("clef_G2", "C5", "B4", "A4", "G4"),
+            staff("clef_G2_8vb", "G4", "G4", "E4", "D4"), staff("clef_F4", "C3", "G2", "A2", "E2"),
+        )
+        val intro = listOf(pianoR, pianoL)
+        val s = OmrScoreBuilder.build("T", listOf(intro, choir + listOf(pianoR, pianoL), choir + listOf(pianoR, pianoL)), bpm = 60.0)
+        assertEquals(listOf("Soprano · 1. porte", "Alto · 2. porte", "Tenor · 3. porte", "Bas · 4. porte", "Piyano · sağ el", "Piyano · sol el"), s.lines.map { it.name })
+        // Giriş ölçüsünde sopranoda nota olmamalı (piyano notaları sopranoya yazılmamalı)
+        assertTrue(s.lines[0].notes.none { it.measureIndex == 1 })
+        assertTrue(s.lines[4].notes.any { it.measureIndex == 1 })
+    }
 }

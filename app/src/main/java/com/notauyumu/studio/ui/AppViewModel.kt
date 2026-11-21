@@ -20,6 +20,7 @@ import com.notauyumu.core.Score
 import com.notauyumu.core.ScoreFormatException
 import com.notauyumu.core.Scorer
 import com.notauyumu.core.ScoringSettings
+import com.notauyumu.core.TuningTracker
 import com.notauyumu.core.VoiceLine
 import com.notauyumu.studio.audio.PracticeEngine
 import com.notauyumu.studio.data.Library
@@ -351,10 +352,16 @@ class SessionView(
 
     fun targetsAt(t: Double): List<Note> = Scorer.targetsAt(line, t)
 
+    private val tuning = TuningTracker(maxCents = settings.maxTuningCents)
+
     fun add(p: PitchSample) {
         raw += p
         val targets = targetsAt(p.timeSec)
-        val grade = Scorer.grade(p.midi, targets.map { it.midi }, settings)
+        val m0 = p.midi
+        if (settings.adaptTuning && m0 != null && targets.isNotEmpty()) {
+            tuning.push(p.timeSec, targets.map { Pitch.centsOff(m0, it.midi, settings.forgiveOctave) }.minBy { abs(it) })
+        }
+        val grade = Scorer.grade(p.midi, targets.map { it.midi }, settings, if (settings.adaptTuning) tuning.offset() else 0.0)
         val m = p.midi
         var shown = m
         var cents: Double? = null
